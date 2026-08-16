@@ -1,0 +1,112 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.gradle.userdev' version '7.1.38'
+    id 'idea'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang 在 1.21.1 中向终端用户分发 Java 21，模组应面向 Java 21 编译。
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+runs {
+    client {
+        modSource sourceSets.main
+        runType 'client'
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
+    server {
+        modSource sourceSets.main
+        runType 'server'
+        arguments '--nogui'
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
+    gameTestServer {
+        modSource sourceSets.main
+        runType 'gameTestServer'
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
+    datagen {
+        modSource sourceSets.main
+        runType 'data'
+        arguments '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+    }
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+    }
+}
+
+repositories {
+    // NeoForge 依赖走国内镜像仓库（mirror.zcswo.cn）
+    maven {
+        name = "NeoForged Mirror"
+        url = uri("https://mirror.zcswo.cn/neoforge/releases")
+        content {
+            includeGroup "net.neoforged"
+        }
+    }
+}
+
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neo_version}"
+}
+
+sourceSets.main.resources {
+    srcDir('src/generated/resources')
+    exclude("**/*.bbmodel")
+    exclude("src/generated/**/.cache")
+}
+
+// 展开 neoforge.mods.toml 中的 ${} 占位符。
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
+    }
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/repo"
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
