@@ -17,7 +17,7 @@ try {
     $jar = Get-ChildItem $libs -Filter "iems-0.8.0-beta.jar" | Select-Object -First 1
     if ($jar) {
         $newName = "IEMS-0.8.0-beta-$buildId.jar"
-        Rename-Item $jar.FullName (Join-Path $libs $newName) -Force
+        Rename-Item -Path $jar.FullName -NewName $newName -Force
         Write-Host "==> artifact: $newName"
     }
 } finally {

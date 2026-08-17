@@ -1,5 +1,7 @@
 package com.iems.core.node;
 
+import com.iems.core.grid.GlobalPos;
+import com.iems.core.grid.GridTopology;
 import net.minecraft.nbt.CompoundTag;
 
 import java.math.BigInteger;
@@ -23,6 +25,9 @@ public class TransferDevice implements IEnergyNode {
     private final List<String> blacklist;
 
     private IConnectionStrategy connectionStrategy;
+
+    /** 注册位置（位置即身份，由注册表在 register 时注入）。 */
+    private volatile GlobalPos position;
 
     public TransferDevice(String deviceName,
                           BigInteger protocolCost,
@@ -73,10 +78,20 @@ public class TransferDevice implements IEnergyNode {
         return connectionStrategy;
     }
 
-    /** 查询是否已接入电网（可达核心）。M2 GridTopology 快照实现。 */
+    /** 注册表维护：注入本设备位置（位置即身份）。 */
+    public void setPosition(GlobalPos pos) {
+        this.position = pos;
+    }
+
+    /** 本设备注册位置（未注册时 null）。 */
+    public GlobalPos getPosition() {
+        return position;
+    }
+
+    /** 查询是否已接入电网（位于电网快照的 mainNetwork，可达核心）。 */
     public boolean isConnectedToCore() {
-        // TODO(M2): 通过电网快照查询本设备是否位于 mainNetwork
-        return false;
+        GlobalPos pos = position;
+        return pos != null && GridTopology.instance().isReachable(pos);
     }
 
     @Override

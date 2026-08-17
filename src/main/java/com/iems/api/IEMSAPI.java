@@ -1,7 +1,11 @@
 package com.iems.api;
 
+import com.iems.core.grid.Connection;
+import com.iems.core.grid.ConnectionType;
 import com.iems.core.grid.DeviceRegistry;
 import com.iems.core.grid.GlobalPos;
+import com.iems.core.grid.GridSnapshot;
+import com.iems.core.grid.GridTopology;
 import com.iems.core.node.CoreDevice;
 import com.iems.core.node.IEnergyNode;
 
@@ -18,31 +22,36 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class IEMSAPI {
 
-    private static final DeviceRegistry REGISTRY = new DeviceRegistry();
+    private static final DeviceRegistry REGISTRY = DeviceRegistry.instance();
+    private static final GridTopology TOPOLOGY = GridTopology.instance();
     private static final Map<String, BigInteger> POWER_INPUTS = new ConcurrentHashMap<>();
     private static final Map<String, BigInteger> POWER_OUTPUTS = new ConcurrentHashMap<>();
 
     private IEMSAPI() {
     }
 
-    /** 注册设备（位置即身份，以 GlobalPos 为键）。 */
+    /** 注册设备（位置即身份，以 GlobalPos 为键），并触发拓扑重扫。 */
     public static void registerDevice(GlobalPos pos, IEnergyNode node) {
         REGISTRY.register(pos, node);
+        TOPOLOGY.rebuild();
     }
 
-    /** 注销设备。 */
+    /** 注销设备，并触发拓扑重扫。 */
     public static void unregisterDevice(GlobalPos pos) {
         REGISTRY.unregister(pos);
+        TOPOLOGY.rebuild();
     }
 
-    /** 注册核心（内部保证全局唯一，跨维度仅一个）。 */
+    /** 注册核心（内部保证全局唯一，跨维度仅一个），并触发拓扑重扫。 */
     public static void registerCore(GlobalPos pos, CoreDevice core) {
         REGISTRY.registerCore(pos, core);
+        TOPOLOGY.rebuild();
     }
 
-    /** 注销核心。 */
+    /** 注销核心，并触发拓扑重扫。 */
     public static void unregisterCore() {
         REGISTRY.unregisterCore();
+        TOPOLOGY.rebuild();
     }
 
     /** 电网当前总能量 (SE)。 */
@@ -66,6 +75,33 @@ public final class IEMSAPI {
     public static BigInteger getProtocolTotal() {
         CoreDevice core = REGISTRY.getCore();
         return core == null ? BigInteger.ZERO : core.getProtocolLimit();
+    }
+
+    // ---------- 连接管理（M2 拓扑） ----------
+
+    /** 添加一条连接（同维度中继 RELAY_TO_RELAY / 跨维度桥接 DIMENSION_BRIDGE），触发拓扑重扫。 */
+    public static void addConnection(GlobalPos a, GlobalPos b, ConnectionType type) {
+        TOPOLOGY.addConnection(new Connection(a, b, type));
+    }
+
+    /** 移除一条连接，触发拓扑重扫。 */
+    public static void removeConnection(GlobalPos a, GlobalPos b, ConnectionType type) {
+        TOPOLOGY.removeConnection(new Connection(a, b, type));
+    }
+
+    /** 当前电网拓扑快照（只读）。 */
+    public static GridSnapshot getSnapshot() {
+        return TOPOLOGY.getSnapshot();
+    }
+
+    /** 指定位置是否已接入电网（位于核心可达网络 mainNetwork）。 */
+    public static boolean isDeviceConnected(GlobalPos pos) {
+        return TOPOLOGY.isReachable(pos);
+    }
+
+    /** 强制触发完整 BFS 重扫。 */
+    public static void forceRescan() {
+        TOPOLOGY.rebuild();
     }
 
     /** 注册外部功率源（输入，速率 SE/tick）。 */

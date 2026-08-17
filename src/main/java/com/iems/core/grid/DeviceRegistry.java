@@ -3,6 +3,7 @@ package com.iems.core.grid;
 import com.iems.core.node.CoreDevice;
 import com.iems.core.node.DimensionGate;
 import com.iems.core.node.IEnergyNode;
+import com.iems.core.node.TransferDevice;
 
 import java.math.BigInteger;
 import java.util.Collection;
@@ -19,14 +20,27 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class DeviceRegistry {
 
+    private static final DeviceRegistry INSTANCE = new DeviceRegistry();
+
     private final Map<GlobalPos, IEnergyNode> devices = new ConcurrentHashMap<>();
 
     private volatile CoreDevice core;
     private volatile GlobalPos corePos;
 
+    private DeviceRegistry() {
+    }
+
+    /** 全局单例（内部模块共享同一个设备池）。 */
+    public static DeviceRegistry instance() {
+        return INSTANCE;
+    }
+
     /** 注册一个设备。若为 DimensionGate，则与同 PID 的其他门建立对端关系。 */
     public void register(GlobalPos pos, IEnergyNode node) {
         devices.put(pos, node);
+        if (node instanceof TransferDevice transferDevice) {
+            transferDevice.setPosition(pos);
+        }
         if (node instanceof DimensionGate gate) {
             linkDimensionGate(pos, gate);
         }

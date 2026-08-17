@@ -1,5 +1,6 @@
 package com.iems.core.node;
 
+import com.iems.core.grid.GridTopology;
 import net.minecraft.nbt.CompoundTag;
 
 import java.math.BigInteger;
@@ -62,9 +63,9 @@ public class CoreDevice implements IEnergyNode {
         return gridActive;
     }
 
-    /** 强制触发完整 BFS 重扫（M2 GridTopology 实现）。 */
+    /** 强制触发完整 BFS 重扫（委托 GridTopology 重建快照）。 */
     public void forceRescan() {
-        // TODO(M2): 触发 GridTopology 全局 BFS 重扫
+        GridTopology.instance().rebuild();
     }
 
     /** 运行时修改协议容量上限。 */
