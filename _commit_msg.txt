@@ -1,0 +1,17 @@
+v0.8.0-beta-M3
+
+## Phase 3: EnergyDispatcher 每 Tick 能量调度（dispatcher/，1 文件）
+- 实现 EnergyDispatcher：分帧调度（frameSize=32），按优先级分配
+- 核心逻辑：收集主网生产者/消费者 → 计算供给（自发电+外部源+产出）→ 计算需求 → 预算平衡 → 优先级分配
+- 供给不足时：按优先级从高到低逐次满足，剩余降级为 0
+- 供给充足时：全满足，溢出存入核心
+- INFINITE_ENERGY 常量（10^100）表示"无限供给"，替代 BigInteger.MAX_VALUE
+
+## Phase 3: IEnergyProducer / IEnergyConsumer 接口补全（core/node/，2 文件）
+- IEnergyProducer extends IEnergyNode：producePerTick() + getPriority()（default 0）
+- IEnergyConsumer extends IEnergyNode：consumePerTick(available) + getPriority()（default 0）
+- 修复 package 声明错误（producer 误写为 dispatcher 包）
+- 两个接口新增 extends IEnergyNode，确保 instanceof 类型兼容
+
+## 构建
+- BUILD.00000004: 编译通过
