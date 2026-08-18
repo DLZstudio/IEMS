@@ -35,7 +35,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class EnergyDispatcher {
 
     /** 单帧最多处理设备数（超出则延迟到下一帧）。防止一次调用过长阻塞服务器线程。 */
-    public static final int DEFAULT_FRAME_SIZE = 32;
+    private static final int FRAME_SIZE_RATIO = 10;
+
+    /**
+     * 计算动态帧大小：取设备总数的 1/FRAME_SIZE_RATIO，至少 8。
+     * 白皮书建议：每 Tick 只处理约 1/10 的设备，避免单 Tick 过长。
+     */
+    private static int calculateFrameSize(int totalDevices) {
+        return Math.max(8, totalDevices / FRAME_SIZE_RATIO);
+    }
 
     private EnergyDispatcher() {
     }
@@ -58,15 +66,15 @@ public final class EnergyDispatcher {
         if (core == null) {
             return; // 无核心，跳过
         }
-        int limit = frameSize <= 0 ? DEFAULT_FRAME_SIZE : frameSize;
+        int limit = frameSize <= 0 ? calculateFrameSize(IEMSAPI.getRegistry().size()) : frameSize;
         dispatch(core, limit);
     }
 
     /**
-     * 无参重载，使用默认帧大小。
+     * 无参重载，根据当前设备总数动态计算帧大小。
      */
     public static void dispatch() {
-        dispatch(DEFAULT_FRAME_SIZE);
+        dispatch(0);
     }
 
     // -------------------------------------------------------------------------
@@ -112,15 +120,11 @@ public final class EnergyDispatcher {
         if (shortfall.signum() <= 0) {
             // 供给充足：全满足，多余存入核心
             satisfyAll(consumers, frameSize);
-            BigInteger surplus = budget.subtract(totalDemand);
-            core.setCurrentEnergy(currentEnergy.add(produced).add(externalInput).add(selfGen));
-            // surplus 不直接加回去（防止重复累加），由外部按实际变化结算
+            core.setCurrentEnergy(budget.subtract(totalDemand));
         } else {
             // 供给不足：按优先级从高到低逐次满足，直到耗尽
-            distributeWithPriority(consumers, budget, frameSize);
-            // 扣减核心能量：按实际消耗比例调整
-            BigInteger actualConsumed = calculateActualConsumed(consumers, totalDemand);
-            core.setCurrentEnergy(budget.subtract(actualConsumed));
+            BigInteger actualConsumed = distributeWithPriority(consumers, budget, frameSize);
+            core.setCurrentEnergy(budget.subtract(actualConsumed).max(BigInteger.ZERO));
         }
     }
 
@@ -181,36 +185,32 @@ public final class EnergyDispatcher {
      * <p>
      * 优先级别（{@code getPriority()} 返回值越小优先级越高，同 priority 按 position 字典序兜底）。
      * </p>
+     * @return 本 Tick 实际消耗的能量
      */
-    private static void distributeWithPriority(List<DeviceEntry> consumers,
-                                                BigInteger budget,
-                                                int frameSize) {
+    private static BigInteger distributeWithPriority(List<DeviceEntry> consumers,
+                                                      BigInteger budget,
+                                                      int frameSize) {
         // 排序：priority 升序（越小越高），同 priority 按 position
         List<DeviceEntry> sorted = new ArrayList<>(consumers);
         sorted.sort(Comparator
                 .comparingInt((DeviceEntry e) -> e.priority)
                 .thenComparing(e -> e.pos.toString()));
 
+        BigInteger actualConsumed = BigInteger.ZERO;
         BigInteger remaining = budget;
         int count = 0;
         for (DeviceEntry e : sorted) {
-            if (count >= frameSize) break;
+            if (count >= frameSize || remaining.signum() <= 0) break;
             IEnergyConsumer c = (IEnergyConsumer) e.node;
             // 尝试消费，但上限为剩余预算
             BigInteger demand = c.consumePerTick(remaining);
             if (demand.signum() > 0) {
-                remaining = remaining.subtract(demand).max(BigInteger.ZERO);
+                actualConsumed = actualConsumed.add(demand);
+                remaining = remaining.subtract(demand);
             }
             count++;
         }
-    }
-
-    /** 计算实际消耗的总量（用于核心能量结算）。 */
-    private static BigInteger calculateActualConsumed(List<DeviceEntry> consumers,
-                                                       BigInteger totalDemand) {
-        // 保守估算：所有消费者都消耗了他们请求的量（实际由 consumePerTick 内部分配）
-        // 这里返回 totalDemand，由外部根据实际调度结果调整
-        return totalDemand;
+        return actualConsumed;
     }
 
     // -------------------------------------------------------------------------

@@ -44,6 +44,8 @@ public class DeviceRegistry {
         if (node instanceof DimensionGate gate) {
             linkDimensionGate(pos, gate);
         }
+        // 检查协议容量是否超限
+        checkProtocolLimit();
     }
 
     /** 注销一个设备。若为 DimensionGate，则与同 PID 的对端解除关系。 */
@@ -52,6 +54,8 @@ public class DeviceRegistry {
         if (removed instanceof DimensionGate gate) {
             unlinkDimensionGate(pos, gate);
         }
+        // 检查协议容量是否超限（可能因卸载恢复正常）
+        checkProtocolLimit();
     }
 
     public IEnergyNode get(GlobalPos pos) {
@@ -102,6 +106,25 @@ public class DeviceRegistry {
             sum = sum.add(node.getProtocolCost());
         }
         return sum;
+    }
+
+    /**
+     * 检查协议容量是否超限，若超限则关停电网。
+     * <p>
+     * 按白皮书第7.2节：protocolUsed > protocolTotal → 电网关停。
+     * </p>
+     */
+    private void checkProtocolLimit() {
+        if (core == null || corePos == null) {
+            return;
+        }
+        BigInteger used = getProtocolUsed();
+        BigInteger limit = core.getProtocolLimit();
+        if (used.compareTo(limit) > 0) {
+            // 超限，关停电网
+            core.setGridActive(false);
+            GridTopology.instance().rebuild();
+        }
     }
 
     private void linkDimensionGate(GlobalPos pos, DimensionGate gate) {

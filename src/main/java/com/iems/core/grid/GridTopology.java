@@ -156,8 +156,14 @@ public class GridTopology {
             GlobalPos start = remaining.iterator().next();
             Set<GlobalPos> cluster = bfs(start, adjacency, registry);
             cluster.retainAll(remaining);
-            orphans.add(cluster);
-            remaining.removeAll(cluster);
+            // 过滤空集群（理论上不应出现，但防御性处理）
+            if (!cluster.isEmpty()) {
+                orphans.add(cluster);
+                remaining.removeAll(cluster);
+            } else {
+                // 孤立节点：直接从 remaining 移除
+                remaining.remove(start);
+            }
         }
         return orphans;
     }

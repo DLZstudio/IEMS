@@ -11,9 +11,25 @@ import net.minecraft.world.level.Level;
  * 连接数据、设备注册一律以 GlobalPos 为键，不持有对象引用。
  * </p>
  */
-public record GlobalPos(ResourceKey<Level> dimension, BlockPos pos) {
+public record GlobalPos(ResourceKey<Level> dimension, BlockPos pos) implements Comparable<GlobalPos> {
 
     public static GlobalPos of(ResourceKey<Level> dimension, BlockPos pos) {
         return new GlobalPos(dimension, pos);
+    }
+
+    /**
+     * 字典序比较：先按维度名称，再按 X/Z 坐标（Y 优先级低于 X/Z）。
+     */
+    @Override
+    public int compareTo(GlobalPos other) {
+        int dimCmp = this.dimension().location().getPath()
+                .compareTo(other.dimension().location().getPath());
+        if (dimCmp != 0) return dimCmp;
+        // 同维度：按 X、Z、Y 依次比较
+        int xCmp = Integer.compare(this.pos().getX(), other.pos().getX());
+        if (xCmp != 0) return xCmp;
+        int zCmp = Integer.compare(this.pos().getZ(), other.pos().getZ());
+        if (zCmp != 0) return zCmp;
+        return Integer.compare(this.pos().getY(), other.pos().getY());
     }
 }
