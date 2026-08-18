@@ -77,6 +77,11 @@ public class GridTopology {
             return;
         }
 
+        // 先刷新所有设备的协议成本（支持动态计算）
+        for (IEnergyNode node : registry.getAll()) {
+            node.refreshProtocolCost();
+        }
+
         Map<GlobalPos, Set<GlobalPos>> adjacency = buildAdjacency();
         Set<Connection> pending = findPendingConnections();
 
