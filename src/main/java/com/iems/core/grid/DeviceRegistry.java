@@ -10,6 +10,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 /**
  * 设备池（Registry）。
@@ -26,6 +27,31 @@ public class DeviceRegistry {
 
     private volatile CoreDevice core;
     private volatile GlobalPos corePos;
+
+    /**
+     * 区块加载/卸载回调。
+     * <p>
+     * 由 IEMS 模组层（如 IEMS.onServerStarted）设置，实现具体的区块常加载逻辑。
+     * </p>
+     */
+    private static Consumer<GlobalPos> chunkLoadCallback;
+    private static Consumer<GlobalPos> chunkUnloadCallback;
+
+    /**
+     * 设置区块加载回调（由模组层调用）。
+     * @param callback 加载区块时的回调，接收 GlobalPos
+     */
+    public static void setChunkLoadCallback(Consumer<GlobalPos> callback) {
+        chunkLoadCallback = callback;
+    }
+
+    /**
+     * 设置区块卸载回调（由模组层调用）。
+     * @param callback 卸载区块时的回调，接收 GlobalPos
+     */
+    public static void setChunkUnloadCallback(Consumer<GlobalPos> callback) {
+        chunkUnloadCallback = callback;
+    }
 
     private DeviceRegistry() {
     }
@@ -81,14 +107,19 @@ public class DeviceRegistry {
         }
         this.core = core;
         this.corePos = pos;
-        // TODO(M6): 核心区块常加载 Level.setChunkForced(pos, true)
+        // M6: 触发核心区块常加载
+        if (chunkLoadCallback != null) {
+            chunkLoadCallback.accept(pos);
+        }
     }
 
     /** 注销核心。 */
     public void unregisterCore() {
+        if (corePos != null && chunkUnloadCallback != null) {
+            chunkUnloadCallback.accept(corePos);
+        }
         this.core = null;
         this.corePos = null;
-        // TODO(M6): 解除核心区块常加载
     }
 
     public CoreDevice getCore() {

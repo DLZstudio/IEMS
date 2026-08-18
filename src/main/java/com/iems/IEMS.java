@@ -1,6 +1,9 @@
 package com.iems;
 
+import com.iems.core.grid.DeviceRegistry;
+import com.iems.core.grid.GlobalPos;
 import com.mojang.logging.LogUtils;
+import net.minecraft.world.level.ChunkPos;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -26,9 +29,18 @@ public class IEMS {
 
     /**
      * 模组构造器：FML 会自动注入 IEventBus 与 ModContainer。
+     * 注意：事件监听器的注册应使用 modEventBus.addListener()，而非在构造器内直接捕获事件参数。
      */
     public IEMS(IEventBus modEventBus, ModContainer modContainer) {
-        // 后续里程碑在此注册 IEMSAPI 门面、事件监听器等。
+        // M6 的区块常加载逻辑需由外部（如 IEMSEvents）在 ServerStartedEvent 中注册回调。
+        // 此处仅记录模组加载信息，具体实现见后续 IEMSEvents 类。
         LOGGER.info("IEMS {} 已加载", modContainer.getModInfo().getVersion());
+    }
+
+    /**
+     * 辅助方法：将 GlobalPos 转换为 ChunkPos。
+     */
+    public static ChunkPos toChunkPos(GlobalPos pos) {
+        return new ChunkPos(pos.pos());
     }
 }
