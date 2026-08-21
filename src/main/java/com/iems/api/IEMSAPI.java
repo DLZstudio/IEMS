@@ -8,6 +8,7 @@ import com.iems.core.grid.GridSnapshot;
 import com.iems.core.grid.GridTopology;
 import com.iems.core.node.CoreDevice;
 import com.iems.core.node.IEnergyNode;
+import net.minecraft.world.phys.Vec3;
 
 import java.math.BigInteger;
 import java.util.Map;
@@ -79,14 +80,40 @@ public final class IEMSAPI {
 
     // ---------- 连接管理（M2 拓扑） ----------
 
-    /** 添加一条连接（同维度中继 RELAY_TO_RELAY / 跨维度桥接 DIMENSION_BRIDGE），触发拓扑重扫。 */
+    /**
+     * 添加一条连接（同维度中继 RELAY_TO_RELAY / 跨维度桥接 DIMENSION_BRIDGE），触发拓扑重扫。
+     * <p>
+     * 锚点自动取自注册表设备 {@link IEnergyNode#getAnchorOffset()}；
+     * 设备未注册时回退方块中心 {@code (0.5, 0.5, 0.5)}。
+     * </p>
+     */
     public static void addConnection(GlobalPos a, GlobalPos b, ConnectionType type) {
-        TOPOLOGY.addConnection(new Connection(a, b, type));
+        Vec3 anchorA = anchorOf(a);
+        Vec3 anchorB = anchorOf(b);
+        TOPOLOGY.addConnection(Connection.of(a, b, type,
+                (float) anchorA.x, (float) anchorA.y, (float) anchorA.z,
+                (float) anchorB.x, (float) anchorB.y, (float) anchorB.z));
     }
 
-    /** 移除一条连接，触发拓扑重扫。 */
+    /**
+     * 添加一条连接并显式指定两端锚点（覆盖注册表设备锚点）。
+     */
+    public static void addConnection(GlobalPos a, GlobalPos b, ConnectionType type,
+                                     Vec3 anchorA, Vec3 anchorB) {
+        TOPOLOGY.addConnection(Connection.of(a, b, type,
+                (float) anchorA.x, (float) anchorA.y, (float) anchorA.z,
+                (float) anchorB.x, (float) anchorB.y, (float) anchorB.z));
+    }
+
+    /** 移除一条连接（身份判定忽略锚点），触发拓扑重扫。 */
     public static void removeConnection(GlobalPos a, GlobalPos b, ConnectionType type) {
-        TOPOLOGY.removeConnection(new Connection(a, b, type));
+        TOPOLOGY.removeConnection(Connection.of(a, b, type));
+    }
+
+    /** 查询设备锚点；未注册回退方块中心。 */
+    private static Vec3 anchorOf(GlobalPos pos) {
+        IEnergyNode node = REGISTRY.get(pos);
+        return node != null ? node.getAnchorOffset() : new Vec3(0.5, 0.5, 0.5);
     }
 
     /** 当前电网拓扑快照（只读）。 */

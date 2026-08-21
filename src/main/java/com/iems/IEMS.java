@@ -1,7 +1,7 @@
 package com.iems;
 
-import com.iems.core.grid.DeviceRegistry;
 import com.iems.core.grid.GlobalPos;
+import com.iems.network.IEMSNetworking;
 import com.mojang.logging.LogUtils;
 import net.minecraft.world.level.ChunkPos;
 import net.neoforged.bus.api.IEventBus;
@@ -29,11 +29,13 @@ public class IEMS {
 
     /**
      * 模组构造器：FML 会自动注入 IEventBus 与 ModContainer。
-     * 注意：事件监听器的注册应使用 modEventBus.addListener()，而非在构造器内直接捕获事件参数。
+     * 在此注册网络层（M7）与服务端事件（M6 区块常加载 + M7 快照推送）。
      */
     public IEMS(IEventBus modEventBus, ModContainer modContainer) {
-        // M6 的区块常加载逻辑需由外部（如 IEMSEvents）在 ServerStartedEvent 中注册回调。
-        // 此处仅记录模组加载信息，具体实现见后续 IEMSEvents 类。
+        // M7: 注册网络包（GridSyncPayload 服务端 → 客户端）
+        IEMSNetworking.register(modEventBus);
+        // M7: 挂载服务端事件（区块常加载回调 + 每 40 tick 电网快照推送）
+        IEMSEvents.register();
         LOGGER.info("IEMS {} 已加载", modContainer.getModInfo().getVersion());
     }
 
