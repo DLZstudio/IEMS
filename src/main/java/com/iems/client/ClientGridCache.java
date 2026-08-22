@@ -4,6 +4,7 @@ import com.iems.core.grid.Connection;
 import com.iems.core.grid.GlobalPos;
 import com.iems.network.GridSyncPayload;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -50,6 +51,22 @@ public final class ClientGridCache {
     private static volatile int connectedDeviceCount = 0;
 
     // ------------------------------------------------------------------
+    // HUD 数据（M8，由 GridSyncPayload 随快照推送）
+    // ------------------------------------------------------------------
+
+    /** 核心当前能量 (SE)。 */
+    private static volatile BigInteger currentEnergy = BigInteger.ZERO;
+
+    /** 核心能量总容量 (SE)。 */
+    private static volatile BigInteger totalCapacity = BigInteger.ZERO;
+
+    /** 已用协议容量。 */
+    private static volatile BigInteger protocolUsed = BigInteger.ZERO;
+
+    /** 协议容量上限。 */
+    private static volatile BigInteger protocolTotal = BigInteger.ZERO;
+
+    // ------------------------------------------------------------------
     // 动画状态
     // ------------------------------------------------------------------
 
@@ -65,15 +82,34 @@ public final class ClientGridCache {
     /** 各设备通电进度缓存（0.0~1.0）。键 = GlobalPos。 */
     private static final Map<GlobalPos, Float> DEVICE_POWER_PROGRESS = new ConcurrentHashMap<>();
 
-    /** 各设备断电进度缓存（0.0~1.0）。键 = GlobalPos。 */
-    private static final Map<GlobalPos, Float> DEVICE_POWER_OFF_PROGRESS = new ConcurrentHashMap<>();
-
     private ClientGridCache() {
     }
 
     // ------------------------------------------------------------------
     // 写入（网络线程 / 主线程调用）
     // ------------------------------------------------------------------
+
+    /**
+     * 清空全部缓存（客户端退出世界/服务器时调用，见 ClientGridLifecycle）。
+     * <p>
+     * V-02 修复：防止上一个世界的连接/核心数据残留，
+     * 在新世界同坐标渲染出幽灵激光。
+     * </p>
+     */
+    public static void clearAll() {
+        connections = List.of();
+        corePos = null;
+        gridShutdown = false;
+        connectedDeviceCount = 0;
+        poweringOff = false;
+        clientCorePowerStartTime = -1L;
+        clientPowerOffStartTime = 0L;
+        DEVICE_POWER_PROGRESS.clear();
+        currentEnergy = BigInteger.ZERO;
+        totalCapacity = BigInteger.ZERO;
+        protocolUsed = BigInteger.ZERO;
+        protocolTotal = BigInteger.ZERO;
+    }
 
     /**
      * 应用一帧电网快照（客户端主线程，由 GridSyncPayload 处理器调用）。
@@ -87,6 +123,8 @@ public final class ClientGridCache {
         updateCorePos(payload.corePos());
         updateGridState(payload.shutdown(), payload.deviceCount());
         updateConnections(payload.connections());
+        updateGridStats(payload.currentEnergy(), payload.totalCapacity(),
+                payload.protocolUsed(), payload.protocolTotal());
 
         // 进度映射：主网可达设备通电进度 = 1.0；电网关停时 = 0.0（断电变红）
         clearProgress();
@@ -129,6 +167,15 @@ public final class ClientGridCache {
         connectedDeviceCount = deviceCount;
     }
 
+    /** 更新 HUD 数值：能量/协议容量（网络线程，M8）。 */
+    public static void updateGridStats(BigInteger energy, BigInteger capacity,
+                                        BigInteger used, BigInteger limit) {
+        currentEnergy = energy == null ? BigInteger.ZERO : energy;
+        totalCapacity = capacity == null ? BigInteger.ZERO : capacity;
+        protocolUsed = used == null ? BigInteger.ZERO : used;
+        protocolTotal = limit == null ? BigInteger.ZERO : limit;
+    }
+
     /** 设置断电动画状态（网络线程）。 */
     public static void setPoweringOff(boolean off) {
         poweringOff = off;
@@ -149,15 +196,9 @@ public final class ClientGridCache {
         DEVICE_POWER_PROGRESS.put(pos, progress);
     }
 
-    /** 更新单个设备断电进度（网络线程）。 */
-    public static void putDevicePowerOffProgress(GlobalPos pos, float progress) {
-        DEVICE_POWER_OFF_PROGRESS.put(pos, progress);
-    }
-
     /** 清空进度缓存（网络线程，拓扑重建时调用）。 */
     public static void clearProgress() {
         DEVICE_POWER_PROGRESS.clear();
-        DEVICE_POWER_OFF_PROGRESS.clear();
     }
 
     // ------------------------------------------------------------------
@@ -204,6 +245,26 @@ public final class ClientGridCache {
         return connectedDeviceCount;
     }
 
+    /** 核心当前能量 (SE)（HUD 用，M8）。 */
+    public static BigInteger getCurrentEnergy() {
+        return currentEnergy;
+    }
+
+    /** 核心能量总容量 (SE)（HUD 用，M8）。 */
+    public static BigInteger getTotalCapacity() {
+        return totalCapacity;
+    }
+
+    /** 已用协议容量（HUD 用，M8）。 */
+    public static BigInteger getProtocolUsed() {
+        return protocolUsed;
+    }
+
+    /** 协议容量上限（HUD 用，M8）。 */
+    public static BigInteger getProtocolTotal() {
+        return protocolTotal;
+    }
+
     /** 是否处于断电动画中。 */
     public static boolean isPoweringOff() {
         return poweringOff;
@@ -222,10 +283,5 @@ public final class ClientGridCache {
     /** 设备通电进度（0.0~1.0，缺失返回 0）。 */
     public static float getDevicePowerProgress(GlobalPos pos) {
         return DEVICE_POWER_PROGRESS.getOrDefault(pos, 0.0f);
-    }
-
-    /** 设备断电进度（0.0~1.0，缺失返回 0）。 */
-    public static float getDevicePowerOffProgress(GlobalPos pos) {
-        return DEVICE_POWER_OFF_PROGRESS.getOrDefault(pos, 0.0f);
     }
 }

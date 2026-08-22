@@ -5,7 +5,7 @@
 **发布机构：** 等离子工作室 (DLZstudio)
 **适用版本：** IEMS 0.8.0-beta（对应 Minecraft 1.21.1, NeoForge 21.1.x, Java 21+）
 **文档性质：** 内部架构规范 / 开发指南 / 最终裁定标准
-**归档日期：** 2026年8月16日
+**归档日期：** 2026年8月16日（M8 修订：2026年8月22日，同步至 BUILD.00000013 实际实现）
 
 ---
 
@@ -49,10 +49,11 @@ IEMS 采用 **逻辑-表现完全分离** 的架构。逻辑层以纯 POJO 形�
 │
 └── Block / BlockEntity (注册到 Minecraft)
     │
-    ├── 持有 IEMS 逻辑实例 (CoreDevice / TransferDevice / StorageDevice)
-    ├── 在构造器 / onLoad() 中 new 实例并调用 IEMSAPI.register()
-    ├── 在 saveAdditional() 中持久化参数
-    └── 在 loadAdditional() 中重建实例 (可选择性读取NBT)
+    ├── 持有 IEMS 逻辑实例 (CoreDevice / TransferDevice / StorageDevice / DimensionGate)
+    ├── 构造器 / loadAdditional() 中 new 实例 (纯 POJO，无需 Level)
+    ├── onLoad() 中调用 IEMSAPI.registerDevice() 注册 (仅服务端，见 §4.2)
+    ├── saveAdditional() 中持久化参数 (或直接调 serializeState())
+    └── setRemoved() / onChunkUnloaded() 中注销 (连接数据保留在 iems_grid.dat)
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -125,18 +126,24 @@ IEMS 采用 **逻辑-表现完全分离** 的架构。逻辑层以纯 POJO 形�
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | deviceName | String | 设备名称 |
-| protocolCost | int | 协议容量占用 |
+| protocolCost | BigInteger | 协议容量占用（支持动态/负值释放容量） |
 | maxConnectionDistance | int | 最大连接距离 (格) |
 | autoConnect | boolean | 是否启用自动连接 |
 | whitelist | List\<String\> | 白名单 (方块ID) |
 | blacklist | List\<String\> | 黑名单 (方块ID) |
+| anchorOffset | Vec3 | (可选) 激光连接口偏移，默认方块中心 (0.5, 0.5, 0.5) |
+
+> 多方块结构 / 异形模型设备应使用带 `anchorOffset` 的完整构造器（或覆写 `getAnchorOffset()`），
+> 指定实际连接口位置；锚点在建连时固化进 Connection 并同步到客户端渲染。
 
 运行时方法：
 
 | 方法 | 说明 |
 |------|------|
 | void updateStrategy(IConnectionStrategy) | 运行时替换连接策略 |
+| void setPosition(GlobalPos) | 绑定设备位置（拓扑计算用） |
 | boolean isConnectedToCore() | 查询是否已接入电网 |
+| Vec3 getAnchorOffset() | 连接口世界偏移（相对方块原点） |
 | CompoundTag serializeState() | 序列化状态供持久化 |
 | void restoreState(CompoundTag) | 从NBT恢复状态 |
 
@@ -149,7 +156,7 @@ IEMS 采用 **逻辑-表现完全分离** 的架构。逻辑层以纯 POJO 形�
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | deviceName | String | 设备名称 |
-| protocolCost | int | 协议容量占用 |
+| protocolCost | BigInteger | 协议容量占用 |
 | maxEnergy | BigInteger | 储能上限 (SE) |
 | ioRatePerTick | BigInteger | 每 Tick 最大充放电速率 |
 
@@ -159,6 +166,36 @@ IEMS 采用 **逻辑-表现完全分离** 的架构。逻辑层以纯 POJO 形�
 |------|------|
 | EnergyValue onChargeTick(EnergyValue) | 调度器调用，传入盈余，返回实际充入量 |
 | EnergyValue onDischargeTick(EnergyValue) | 调度器调用，传入缺口，返回实际放出量 |
+| BigInteger getStoredEnergy() | 当前储能 |
+
+> 调度顺序（M5+ 修复批次）：电网盈余时**先充电储能**再满足消费（防核心容量溢出丢能量）；
+> 短缺时**先放电储能**补缺，再按消费优先级分配。储能放出未被消费的部分回流核心池。
+
+#### 3.1.4 DimensionGate（跨维度桥接门）
+
+职责：成对配对（相同 PairID）后跨维度桥接电网，连接端点用 GlobalPos，消耗较大协议容量。
+
+构造参数（简化构造器）：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| deviceName | String | 设备名称 |
+| protocolCost | BigInteger | 协议容量占用（跨维度成本更高） |
+| pairId | String | 配对 ID（16 位十六进制大写，构造时校验格式） |
+
+完整构造器额外参数：`autoBroadcast`（自动广播能量）、`maxPeers`（最大对端数，0=无限制）、
+`structureSize`（多方块尺寸）、`frameBlocks`（框架方块谓词）、`coreBlock`（结构核心）、
+`dimensionScale` + `useCustomScale`（距离换算比例：下界 8、末地 1）。
+
+核心方法：
+
+| 方法 | 说明 |
+|------|------|
+| boolean addPeer(GlobalPos) | 添加配对端（超 maxPeers 返回 false，不抛异常） |
+| boolean canAcceptPeer() | 是否还能接受新对端 |
+| void removePeer(GlobalPos) | 移除配对端 |
+| boolean isPaired() | 是否已有配对 |
+| double getDimensionScale() | 维度距离换算比例 |
 
 ---
 
@@ -180,41 +217,61 @@ IEMS 不追踪实例的对象身份，只追踪位置上的设备存在性。
 【初次放置】
 玩家放置方块 → BlockEntity 构造器被调用
     ↓
-new TransferDevice(...)  ← 参数由开发者决定
+new TransferDevice(...)  ← 参数由开发者决定（纯 POJO，此时尚无 Level）
     ↓
-IEMSAPI.registerDevice(pos, instance)
+onLoad() 被调用（服务端）：
+IEMSAPI.registerDevice(GlobalPos.of(level.dimension(), worldPosition), instance)
     ↓
-IEMS 将该位置加入设备池
+IEMS 将该位置加入设备池（GlobalPos 为键）
     ↓
 触发 BFS 重扫，判断是否可达核心
     ↓
-saveAdditional() 将参数写入 NBT
+saveAdditional() 将参数写入 NBT（可直接用 logic.serializeState()）
 
 【区块卸载】
-设备从设备池移除 (但连接数据保留)
+onChunkUnloaded() → unregisterDevice(GlobalPos)
+    ↓
+设备从设备池移除 (但连接数据保留在 iems_grid.dat)
     ↓
 实例被 GC 回收
 
 【区块加载】
-loadAdditional() 被调用
+BlockEntity 重建：构造器 → loadAdditional() (从 NBT 读取参数)
     ↓
 开发者选择：
   ├─ 读取 NBT → 用保存的参数 new 实例 (常规行为)
   └─ 不读 NBT → 用新参数 new 实例 (量子力学玩法)
     ↓
-IEMSAPI.registerDevice(pos, instance)
+onLoad() 再次注册（区块加载后设备自动回归电网）
     ↓
 查询当前电网快照 → 获取正确的供电状态
     ↓
 如果 gridShutdown == true → 不供电
 
 【设备破坏】
-unregisterDevice() 被调用
+setRemoved() → unregisterDevice(GlobalPos)
     ↓
 从设备池移除
     ↓
 触发 BFS 重扫，更新电网快照
 ```
+
+#### 推荐的实例创建方式（重要）
+
+设备实例的创建与注册必须遵守**「构造期只 new，加载期才注册」**：
+
+| 阶段 | 钩子 | 该做什么 | 原因 |
+|------|------|----------|------|
+| 实例化 | 构造器 / `loadAdditional()` | 只 `new` 逻辑实例（纯 POJO） | 设备类不依赖 Level，构造器中 BE 的 `level` 字段为 null |
+| 注册 | `onLoad()` | `registerDevice(GlobalPos.of(level.dimension(), worldPosition), logic)` | GlobalPos 需要维度键，必须等 Level 就绪 |
+| 注销 | `setRemoved()`（破坏）+ `onChunkUnloaded()`（卸载） | `unregisterDevice(GlobalPos)` | 破坏与卸载都不会调用对方钩子，两处都要写 |
+
+两条硬性规则：
+
+1. **注册/注销必须加 `!level.isClientSide` 守卫**——BlockEntity 在客户端与服务端各有一份，
+   客户端实例混入设备池会污染电网状态。
+2. **禁止在构造器中注册**——构造器中拿不到 Level，无法构造 GlobalPos；
+   且构造器在两侧都会执行，注册必然出错。
 
 ### 4.3 趣味玩法："量子力学中继器"
 
@@ -227,10 +284,18 @@ protected void loadAdditional(CompoundTag tag) {
 
     // 不读取 NBT，每次加载随机生成
     int distance = 100 + random.nextInt(400);
-    int cost = 1 + random.nextInt(3);
+    BigInteger cost = BigInteger.valueOf(1 + random.nextInt(3));
 
     this.logic = new TransferDevice("薛定谔的中继器", cost, distance, true, null, null);
-    IEMSAPI.registerDevice(worldPosition, this.logic);
+}
+
+@Override
+public void onLoad() {
+    super.onLoad();
+    if (level != null && !level.isClientSide) {
+        // 注册统一在 onLoad：区块卸载后重载，随机属性自动生效
+        IEMSAPI.registerDevice(GlobalPos.of(level.dimension(), worldPosition), this.logic);
+    }
 }
 ```
 
@@ -246,7 +311,8 @@ protected void loadAdditional(CompoundTag tag) {
 
 - 核心注册时：Level.setChunkForced(true)
 - 核心注销时：Level.setChunkForced(false)
-- 服务器重启时：从 grid_state.dat 恢复核心位置，重新设置常加载
+- 服务器重启时：核心由其 BlockEntity NBT 在区块加载后重注册（onLoad），自动恢复常加载；
+  显式连接数据从 `data/iems_grid.dat`（GridSavedData）恢复注入拓扑
 
 ### 5.2 BFS 全局遍历
 
@@ -280,11 +346,11 @@ BFS 算法（两阶段）：
 
 ```java
 public class GridSnapshot {
-    private final Set<BlockPos> mainNetwork;      // 核心可达设备
-    private final List<Set<BlockPos>> orphanNetworks; // 孤岛集群
-    private final Set<Connection> pendingConnections; // 边界连接
-    private final boolean gridShutdown;           // 关停状态
-    private final BlockPos corePos;               // 核心位置 (恒有效)
+    private final Set<GlobalPos> mainNetwork;        // 核心可达设备（含核心自身）
+    private final List<Set<GlobalPos>> orphanNetworks; // 孤岛集群
+    private final Set<Connection> pendingConnections; // 边界连接（远端未注册/未加载）
+    private final boolean gridShutdown;              // 关停状态
+    private final GlobalPos corePos;                 // 核心位置 (无核心时为 null)
 }
 ```
 
@@ -316,8 +382,9 @@ NFDS 负责发现设备，NFDA 负责将发现结果纳入自动连接范围，�
 
 ### 6.2 供能周期：每 Tick
 
-- 分帧调度：设备池按 ID 哈希分片，每 Tick 只处理 1/20 的设备
-- 功率累计：核心自发电每 Tick 累加，每秒结算一次实际注入
+- 分帧调度：帧大小动态计算（设备总数 1/10，下限 8），每 Tick 只处理一帧设备，避免大电网阻塞服务器线程
+- 同 Tick 幂等守卫：调度器按服务器 tick 计数去重，重复调用不会重复结算
+- 功率累计：核心自发电每 Tick 累加；盈余先充储能再满足消费，短缺先放储能再按优先级分配
 
 ### 6.3 NFDS/NFDA 适配器
 
@@ -347,103 +414,190 @@ NFDS 负责发现设备，NFDA 负责将发现结果纳入自动连接范围，�
 ### 7.2 超限处理
 
 - protocolUsed > protocolTotal → 电网关停
-- 关停时所有设备断电，激光变红
-- 恢复时自动重新供电
+- 关停时所有设备断电，激光变红，调度器停止能量分配
+- **协议关停自动恢复**：用量回到限值内（拆除/降级设备）时自动重新供电
+- **手动关停不被自动恢复**：`/iems shutdown` 或 `IEMSAPI.setGridActive(false)` 关停后，
+  设备增删触发的容量检查不会自动复电，须显式 `/iems restart`（M8 语义精化）
+- `IEMSAPI.isProtocolShutdown()` 可查询当前关停是否由协议超限引起（供面板/指令显示原因）
 
 ---
 
 ## 八、开发者 API
 
-### 8.1 核心接口
+### 8.1 IEMSAPI 门面（静态类）
+
+`IEMSAPI` 是 `final` 类 + 静态方法（非接口），外部模组只依赖此类即可完成全部接入：
 
 ```java
-public interface IEMSAPI {
-    // 设备注册
-    void registerDevice(BlockPos pos, IEnergyNode node);
-    void unregisterDevice(BlockPos pos);
+public final class IEMSAPI {
+    // 设备注册（位置即身份，GlobalPos 为键）
+    static void registerDevice(GlobalPos pos, IEnergyNode node);
+    static void unregisterDevice(GlobalPos pos);
 
-    // 核心管理 (内部保证单例)
-    void registerCore(CoreDevice core);
-    void unregisterCore();
+    // 核心管理（全局唯一，跨维度仅一个）
+    static void registerCore(GlobalPos pos, CoreDevice core);
+    static void unregisterCore();
 
     // 能量查询
-    BigInteger getCurrentEnergy();
-    BigInteger getTotalCapacity();
+    static BigInteger getCurrentEnergy();   // 电网当前总能量 (SE)
+    static BigInteger getTotalCapacity();   // 电网总容量 (SE)
 
     // 协议查询
-    BigInteger getProtocolUsed();
-    BigInteger getProtocolTotal();
+    static BigInteger getProtocolUsed();
+    static BigInteger getProtocolTotal();
 
-    // 功率源注册 (外部发电机接入)
-    void registerPowerInput(String id, BigInteger rate);
-    void unregisterPowerInput(String id);
-    void registerPowerOutput(String id, BigInteger rate);
-    void unregisterPowerOutput(String id);
+    // 电网开关（M8）
+    static void setGridActive(boolean active);
+    static boolean isProtocolShutdown();
+
+    // 连接管理（锚点自动取自设备 getAnchorOffset()，未注册回退方块中心）
+    static void addConnection(GlobalPos a, GlobalPos b, ConnectionType type);
+    static void addConnection(GlobalPos a, GlobalPos b, ConnectionType type,
+                              Vec3 anchorA, Vec3 anchorB); // 显式指定锚点
+    static void removeConnection(GlobalPos a, GlobalPos b, ConnectionType type);
+
+    // 拓扑
+    static GridSnapshot getSnapshot();          // 只读快照
+    static boolean isDeviceConnected(GlobalPos); // 是否在核心可达网络
+    static void forceRescan();                   // 强制完整 BFS 重扫
+
+    // 功率源注册 (外部发电机/负载接入，速率 SE/tick)
+    static void registerPowerInput(String id, BigInteger rate);
+    static void unregisterPowerInput(String id);
+    static void registerPowerOutput(String id, BigInteger rate);
+    static void unregisterPowerOutput(String id);
 }
 ```
+
+`ConnectionType`：`RELAY_TO_RELAY`（同维度中继）/ `DIMENSION_BRIDGE`（跨维度桥接）。
 
 ### 8.2 自定义设备接入
 
-实现以下接口即可绕过三大基类接入电网：
+实现以下接口即可绕过内置基类接入电网。所有节点接口继承自 `IEnergyNode` 基契约：
+`getDeviceName()` / `getProtocolCost()`（BigInteger，可为动态或负值）/ `serializeState()` /
+`restoreState(CompoundTag)`，可选覆写 `getAnchorOffset()`（连接口偏移）与
+`refreshProtocolCost()`（每次 BFS 前刷新动态成本）。
 
 ```java
-public interface IEnergyProducer {
-    EnergyValue producePerTick();
+public interface IEnergyProducer extends IEnergyNode {
+    BigInteger producePerTick();          // 本 Tick 产出 SE（0 = 无产出）
+    default int getPriority() { return 0; } // 数值越小越优先保活
 }
 
-public interface IEnergyConsumer {
-    EnergyValue consumePerTick(EnergyValue available);
+public interface IEnergyConsumer extends IEnergyNode {
+    BigInteger queryDemand();             // 纯查询本 Tick 需求（不得有副作用！）
+    BigInteger consumePerTick(BigInteger budget); // 执行消费，返回实际消耗 ≤ budget
+    default int getPriority() { return 0; } // 数值越小越优先供电
 }
 ```
 
-### 8.3 外部模组的最小实现
+> **两阶段消费契约（V-03 修复后）**：调度器先调 `queryDemand()` 汇总全网需求，
+> 再调 `consumePerTick(budget)` 执行扣减。若在 `queryDemand()` 中产生副作用
+> （如直接扣内部缓存），会在一个 Tick 内被扣两次。旧版单方法接口已废弃。
+
+### 8.3 外部模组的最小实现（推荐模板）
 
 ```java
 public class MyRelayBlockEntity extends BlockEntity {
     private TransferDevice logic;
 
-    public MyRelayBlockEntity(BlockPos pos, BlockState state) {
-        super(MyRelayEntityType.get(), pos, state);
-        this.logic = new TransferDevice("我的中继器", 1, 500, true, null, null);
-        IEMSAPI.registerDevice(pos, this.logic);
+    public MyRelayBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
+        super(type, pos, state);
+        // ① 构造器只 new 纯 POJO（此时 level 为 null，不能注册）
+        this.logic = new TransferDevice("我的中继器", BigInteger.ONE, 500, true, null, null);
+    }
+
+    @Override
+    protected void loadAdditional(CompoundTag tag) {
+        super.loadAdditional(tag);
+        // ② 从 NBT 重建实例（量子玩法可在此忽略 tag 用新参数）
+        this.logic = new TransferDevice(
+                tag.getString("deviceName"),
+                new BigInteger(tag.getString("protocolCost")),
+                tag.getInt("maxDistance"), true, null, null);
+    }
+
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        // ③ 注册统一在 onLoad，且仅服务端
+        if (level != null && !level.isClientSide) {
+            IEMSAPI.registerDevice(GlobalPos.of(level.dimension(), worldPosition), logic);
+        }
+    }
+
+    @Override
+    public void setRemoved() {
+        // ④ 方块被破坏时注销
+        if (level != null && !level.isClientSide) {
+            IEMSAPI.unregisterDevice(GlobalPos.of(level.dimension(), worldPosition));
+        }
+        super.setRemoved();
+    }
+
+    @Override
+    public void onChunkUnloaded() {
+        // ⑤ 区块卸载时注销（连接数据保留在 iems_grid.dat，重载自动回归）
+        if (level != null && !level.isClientSide) {
+            IEMSAPI.unregisterDevice(GlobalPos.of(level.dimension(), worldPosition));
+        }
+        super.onChunkUnloaded();
     }
 
     @Override
     protected void saveAdditional(CompoundTag tag) {
         super.saveAdditional(tag);
         tag.putString("deviceName", logic.getDeviceName());
-        tag.putInt("protocolCost", logic.getProtocolCost());
-        tag.putInt("maxDistance", logic.getMaxDistance());
-    }
-
-    @Override
-    protected void loadAdditional(CompoundTag tag) {
-        super.loadAdditional(tag);
-        String name = tag.getString("deviceName");
-        int cost = tag.getInt("protocolCost");
-        int distance = tag.getInt("maxDistance");
-        this.logic = new TransferDevice(name, cost, distance, true, null, null);
-        IEMSAPI.registerDevice(worldPosition, this.logic);
+        tag.putString("protocolCost", logic.getProtocolCost().toString());
+        tag.putInt("maxDistance", logic.getMaxConnectionDistance());
     }
 }
+```
+
+### 8.4 指令系统（M8）
+
+| 指令 | 权限 | 行为 |
+|------|------|------|
+| `/iems status` | 所有人 | 核心/运行状态/关停原因/能量/容量/协议/主网设备数/孤岛数/连接数/核心坐标 |
+| `/iems protocol` | 所有人 | 协议容量明细（used / limit / 是否超限） |
+| `/iems scan` | 所有人 | 强制 BFS 重扫 + 结果摘要 |
+| `/iems shutdown` | level 2 | 手动关停电网（不被协议检查自动恢复） |
+| `/iems restart` | level 2 | 手动重启电网 |
+
+### 8.5 HUD（M8）
+
+客户端顶部能量条（明日方舟终末地风格圆角条），数据来自 `GridSyncPayload`
+（40 tick 同步一次）→ `ClientGridCache`，三态显示：无核心（灰）/ 关停（红）/ 正常
+（能量 SE + 协议 used/limit）。
+
+外部模组建立连接时可启用拉线模式，实时显示与目标点距离、超距自动断开：
+
+```java
+// 开始拉线（客户端调用）
+EnergyOverlayRenderer.setConnectingMode(true, GlobalPos.of(level.dimension(), anchor), 500);
+// 结束拉线
+EnergyOverlayRenderer.setConnectingMode(false, null, 0);
 ```
 
 ---
 
 ## 九、版本规划
 
-| 里程碑 | 版本 | 核心目标 |
-|--------|------|----------|
-| M1 | 0.8.0-beta-M1 | 三大基类 + IEMSAPI 骨架 |
-| M2 | 0.8.0-beta-M2 | GridTopology + BFS 全局遍历 |
-| M3 | 0.8.0-beta-M3 | EnergyDispatcher + 每 Tick 调度 |
-| M4 | 0.8.0-beta-M4 | 协议容量系统 + 超限关停 |
-| M5 | 0.8.0-beta-M5 | NFDS/NFDA 适配器 + FE 桥接 |
-| M6 | 0.8.0-beta-M6 | 核心常加载 + 连接持久化 |
-| M7 | 0.8.0-beta-M7 | 渲染系统 + 激光连接 |
-| M8 | 0.8.0-beta-M8 | 指令系统 + HUD |
-| M9 | 0.8.0-beta-M9 | Web JSON 数据接口 |
-| M10 | 0.8.0-beta | 完整文档 + 正式发布 |
+| 里程碑 | 版本 | 核心目标 | 状态 |
+|--------|------|----------|------|
+| M1 | 0.8.0-beta-M1 | 三大基类 + IEMSAPI 骨架 | ✅ |
+| M2 | 0.8.0-beta-M2 | GridTopology + BFS 全局遍历 | ✅ |
+| M3 | 0.8.0-beta-M3 | EnergyDispatcher + 每 Tick 分帧调度 | ✅ |
+| M4 | 0.8.0-beta-M4 | 协议容量动态化（refreshProtocolCost） | ✅ |
+| M5 | 0.8.0-beta-M5 | Code Review 修复批次（能量结算/方向性/空集合等） | ✅ |
+| M6 | 0.8.0-beta-M6 | 核心区块常加载 + DeviceRegistry 回调机制 | ✅ |
+| M7 | 0.8.0-beta-M7 | 渲染系统 + 激光连接（GridSyncPayload/锚点/跨维度光晕） | ✅ |
+| M8 | 0.8.0-beta-M8 | 指令系统 + HUD + P0/P1 修复批次（连接持久化/调度契约/生命周期清理） | ✅ |
+| M9 | 0.8.0-beta-M9 | Web 监控面板（JSON 数据接口） | 规划中 |
+| M10 | 0.8.0-beta | 完整文档 + 单测基线 + 正式发布 | 规划中 |
+
+> NFDS/NFDA 适配器（FE 桥接）原计划 M5，实际执行中顺延至 M9+；
+> 单元测试基线（V-13）为 M10 发布门槛。
 
 ---
 
@@ -451,29 +605,30 @@ public class MyRelayBlockEntity extends BlockEntity {
 
 ### 附录 A：存储路径
 
-| 数据类型 | 路径 |
-|----------|------|
-| 连接数据 | 世界存档/data/DLZstudio/IEMS/connections.dat |
-| 电网状态 | 世界存档/data/DLZstudio/IEMS/grid_state.dat |
-| 配置文件 | config/DLZstudio/IEMS/iems.toml |
-| 日志 | logs/iems/ |
+| 数据类型 | 路径 | 状态 |
+|----------|------|------|
+| 连接数据 | 世界存档/data/iems_grid.dat（GridSavedData，NBT） | ✅ 已实现 |
+| 核心/设备实例 | 各自 BlockEntity NBT（区块加载后 onLoad 重注册） | ✅ 已实现 |
+| 配置文件 | config/DLZstudio/IEMS/iems.toml | 规划中（V-14） |
+| 日志 | logs/iems/ | 规划中（当前走标准 slf4j） |
 
-### 附录 B：连接数据格式
+> 原设计的 `data/DLZstudio/IEMS/connections.dat` 受 SavedData 命名限制改为
+> `data/iems_grid.dat`，功能等价（连接 + 锚点全量持久化）。
 
-```json
-{
-  "connections": [
-    {
-      "start": [x1, y1, z1],
-      "end": [x2, y2, z2],
-      "type": "RELAY_TO_RELAY",
-      "dimension": "overworld"
-    }
-  ],
-  "corePos": [x, y, z],
-  "coreId": "iems:core_provider"
-}
+### 附录 B：连接数据格式（iems_grid.dat，NBT）
+
 ```
+iems_grid.dat (CompoundTag)
+├── connections: List<CompoundTag>   // 显式连接全量
+│   ├── start: { dimension: "minecraft:overworld", x, y, z }
+│   ├── end:   { dimension: "minecraft:the_nether", x, y, z }
+│   ├── type:  "RELAY_TO_RELAY" | "DIMENSION_BRIDGE"
+│   └── 锚点: startAnchor/endAnchor (x, y, z 偏移，建连时固化)
+└── 连接增删即 markDirty，存档保存时由拓扑全量重写
+```
+
+核心、设备、维度门对端不写入该文件——由各自 BlockEntity NBT 重注册自动重建；
+iems_grid.dat 只存「显式连接」（含锚点），与「实例可重建」设计一致。
 
 ---
 

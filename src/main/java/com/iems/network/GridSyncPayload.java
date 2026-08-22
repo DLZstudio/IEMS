@@ -12,27 +12,41 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 电网快照同步包（M7 S1）。
+ * 电网快照同步包（M7 S1，M8 扩展 HUD 数据）。
  * <p>
- * 服务端 → 客户端全量推送：核心位置、关停状态、已连接设备数与主网连接列表。
- * 客户端收到后由 {@code ClientGridCache.applySync} 填充渲染缓存。
+ * 服务端 → 客户端全量推送：核心位置、关停状态、已连接设备数与主网连接列表，
+ * 以及能量/协议容量数值（M8 HUD 数据源）。
+ * 客户端收到后由 {@code ClientGridCache.applySync} 填充渲染缓存与 HUD 缓存。
  * </p>
  * <p>
  * 只推送 {@code mainNetwork} 可达连接（两端均接入核心电网），孤岛/边界连接
  * 无电源语义，渲染端不需要。推送间隔由服务端 {@code IEMSEvents} 控制（每 40 tick）。
  * </p>
  *
- * @param corePos     核心位置（无核心时为 null）
- * @param shutdown    电网是否关停（核心 gridActive == false）
- * @param deviceCount 主网设备数（含核心），供客户端判断电网是否为空
- * @param connections 主网可达连接列表（不可变，含锚点偏移）
+ * @param corePos        核心位置（无核心时为 null）
+ * @param shutdown       电网是否关停（核心 gridActive == false）
+ * @param deviceCount    主网设备数（含核心），供客户端判断电网是否为空
+ * @param connections    主网可达连接列表（不可变，含锚点偏移）
+ * @param currentEnergy  核心当前能量 (SE)，M8 HUD
+ * @param totalCapacity  核心能量总容量 (SE)，M8 HUD
+ * @param protocolUsed   已用协议容量，M8 HUD
+ * @param protocolTotal  协议容量上限，M8 HUD
  */
 public record GridSyncPayload(GlobalPos corePos, boolean shutdown, int deviceCount,
-                              List<Connection> connections) implements CustomPacketPayload {
+                              List<Connection> connections,
+                              BigInteger currentEnergy, BigInteger totalCapacity,
+                              BigInteger protocolUsed, BigInteger protocolTotal) implements CustomPacketPayload {
+
+    /** 兼容构造（无 HUD 数据，全零）：供测试与内部调用。 */
+    public GridSyncPayload(GlobalPos corePos, boolean shutdown, int deviceCount, List<Connection> connections) {
+        this(corePos, shutdown, deviceCount, connections,
+                BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO);
+    }
 
     public static final CustomPacketPayload.Type<GridSyncPayload> TYPE =
             new CustomPacketPayload.Type<>(ResourceLocation.fromNamespaceAndPath("iems", "grid_sync"));
@@ -60,6 +74,11 @@ public record GridSyncPayload(GlobalPos corePos, boolean shutdown, int deviceCou
         for (Connection c : conns) {
             writeConnection(buf, c);
         }
+        // HUD 数值（M8）：任意精度，以十进制字符串编码
+        buf.writeUtf(payload.currentEnergy.toString());
+        buf.writeUtf(payload.totalCapacity.toString());
+        buf.writeUtf(payload.protocolUsed.toString());
+        buf.writeUtf(payload.protocolTotal.toString());
     }
 
     private static GridSyncPayload decode(FriendlyByteBuf buf) {
@@ -74,7 +93,12 @@ public record GridSyncPayload(GlobalPos corePos, boolean shutdown, int deviceCou
         for (int i = 0; i < size; i++) {
             conns.add(readConnection(buf));
         }
-        return new GridSyncPayload(corePos, shutdown, deviceCount, List.copyOf(conns));
+        BigInteger currentEnergy = new BigInteger(buf.readUtf());
+        BigInteger totalCapacity = new BigInteger(buf.readUtf());
+        BigInteger protocolUsed = new BigInteger(buf.readUtf());
+        BigInteger protocolTotal = new BigInteger(buf.readUtf());
+        return new GridSyncPayload(corePos, shutdown, deviceCount, List.copyOf(conns),
+                currentEnergy, totalCapacity, protocolUsed, protocolTotal);
     }
 
     private static void writeGlobalPos(FriendlyByteBuf buf, GlobalPos pos) {

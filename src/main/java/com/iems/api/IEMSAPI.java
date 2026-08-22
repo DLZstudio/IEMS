@@ -78,6 +78,28 @@ public final class IEMSAPI {
         return core == null ? BigInteger.ZERO : core.getProtocolLimit();
     }
 
+    /**
+     * 手动开启/关闭电网（M8，供指令或外部管理面板调用）。
+     * <p>
+     * 手动操作优先于协议容量自动关停：清除协议关停标志后，
+     * 下一次容量检查会按当前用量重新裁定（如手动重启但仍然超限，会再次自动关停）。
+     * </p>
+     */
+    public static void setGridActive(boolean active) {
+        CoreDevice core = REGISTRY.getCore();
+        if (core == null) {
+            return;
+        }
+        core.setGridActive(active);
+        REGISTRY.clearProtocolShutdownFlag();
+        TOPOLOGY.rebuild();
+    }
+
+    /** 当前关停是否由协议容量超限引起（手动关停返回 false）。 */
+    public static boolean isProtocolShutdown() {
+        return REGISTRY.isProtocolShutdown();
+    }
+
     // ---------- 连接管理（M2 拓扑） ----------
 
     /**

@@ -33,7 +33,7 @@ public final class IEMSNetworking {
 
     private static void onRegisterPayloadHandlers(RegisterPayloadHandlersEvent event) {
         PayloadRegistrar registrar = event.registrar(IEMS.MODID)
-                .versioned("1")
+                .versioned("2") // M8：GridSyncPayload 扩展能量/协议数值字段
                 .optional();
         // 服务端 → 客户端：电网快照
         registrar.playToClient(

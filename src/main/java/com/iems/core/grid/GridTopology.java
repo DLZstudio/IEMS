@@ -6,6 +6,7 @@ import com.iems.core.node.IEnergyNode;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -36,6 +37,14 @@ public class GridTopology {
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     private volatile GridSnapshot snapshot = GridSnapshot.empty();
 
+    /**
+     * 连接变更回调（由模组层注册，指向 {@link GridSavedData} 的标记脏操作）。
+     * <p>
+     * 逻辑层不直接依赖持久化设施，通过此回调在连接增删时通知存档层落盘。
+     * </p>
+     */
+    private static volatile Runnable connectionsDirtyCallback;
+
     private GridTopology(DeviceRegistry registry) {
         this.registry = registry;
     }
@@ -49,6 +58,7 @@ public class GridTopology {
     /** 添加一条连接（若已存在相同连接则忽略）。 */
     public void addConnection(Connection connection) {
         if (connections.add(connection)) {
+            markConnectionsDirty();
             rebuild();
         }
     }
@@ -56,6 +66,7 @@ public class GridTopology {
     /** 移除一条连接。 */
     public void removeConnection(Connection connection) {
         if (connections.remove(connection)) {
+            markConnectionsDirty();
             rebuild();
         }
     }
@@ -63,6 +74,37 @@ public class GridTopology {
     /** 当前全部连接（只读）。 */
     public Set<Connection> getConnections() {
         return connections;
+    }
+
+    /**
+     * 从存档恢复连接（服务器启动时由 IEMSEvents 调用）。
+     * <p>
+     * 存档数据是唯一事实源：启动时以存档内容<b>覆盖</b>内存中的连接集合
+     * （level 加载期间可能产生的内存连接一律以存档为准）。
+     * </p>
+     */
+    public void loadConnections(Collection<Connection> loaded) {
+        connections.clear();
+        connections.addAll(loaded);
+        rebuild();
+    }
+
+    /** 清空全部运行时状态（连接/快照）。仅在服务器完全停止后由生命周期钩子调用，不标记存档脏。 */
+    public void clearAll() {
+        connections.clear();
+        snapshot = GridSnapshot.empty();
+    }
+
+    /** 注册/注销连接变更回调（连接增删时触发，供存档层标记脏）。 */
+    public static void setConnectionsDirtyCallback(Runnable callback) {
+        connectionsDirtyCallback = callback;
+    }
+
+    private static void markConnectionsDirty() {
+        Runnable callback = connectionsDirtyCallback;
+        if (callback != null) {
+            callback.run();
+        }
     }
 
     // ---------- 拓扑重建（BFS 两阶段） ----------

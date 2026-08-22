@@ -38,7 +38,14 @@ public final class EnergyConverter {
         return FE_FACTORS.get(unit);
     }
 
-    /** 把 amount（from 单位）换算为 to 单位。 */
+    /**
+     * 把 amount（from 单位）换算为 to 单位。
+     * <p>
+     * 已知语义（V-16）：整数除法向下截断——小额能量换算到大单位会归零
+     * （如 1 FE → SE = 0）。Minecraft 常见量级（数千 FE 起）下精度足够，
+     * 白皮书确认维持现状；NFDS 低功率桥接落地时需重新评估。
+     * </p>
+     */
     public static BigInteger convert(BigInteger amount, EnergyUnit from, EnergyUnit to) {
         return amount.multiply(FE_FACTORS.get(from)).divide(FE_FACTORS.get(to));
     }

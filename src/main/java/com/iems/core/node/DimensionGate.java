@@ -140,12 +140,25 @@ public class DimensionGate implements IEnergyNode {
         return Collections.unmodifiableSet(peers);
     }
 
-    /** 注册表维护：加入一个同 PID 对端。 */
-    public void addPeer(GlobalPos pos) {
-        if (maxPeers > 0 && peers.size() >= maxPeers) {
-            throw new IllegalStateException("超出 maxPeers 限制: " + maxPeers);
+    /** 是否还能接受新对端（maxPeers=0 表示无限制）。 */
+    public boolean canAcceptPeer() {
+        return maxPeers <= 0 || peers.size() < maxPeers;
+    }
+
+    /**
+     * 注册表维护：加入一个同 PID 对端。
+     * <p>
+     * V-07 修复：超出 maxPeers 时返回 false 拒绝配对（不再抛异常，
+     * 避免异常冒泡炸掉外部模组的放置逻辑）。
+     * </p>
+     *
+     * @return true 表示配对成功；false 表示被 maxPeers 拒绝或已存在
+     */
+    public boolean addPeer(GlobalPos pos) {
+        if (!canAcceptPeer()) {
+            return false;
         }
-        peers.add(pos);
+        return peers.add(pos);
     }
 
     /** 注册表维护：移除一个同 PID 对端。 */

@@ -18,10 +18,17 @@ public record GlobalPos(ResourceKey<Level> dimension, BlockPos pos) implements C
     }
 
     /**
-     * 字典序比较：先按维度名称，再按 X/Z 坐标（Y 优先级低于 X/Z）。
+     * 字典序比较：先按维度完整标识（namespace + path），再按 X/Z 坐标（Y 优先级低于 X/Z）。
+     * <p>
+     * V-11 修复：比较必须包含 namespace——否则不同模组注册的同 path 自定义维度
+     * 排序歧义，会影响 Connection 端点规范化的稳定性。
+     * </p>
      */
     @Override
     public int compareTo(GlobalPos other) {
+        int nsCmp = this.dimension().location().getNamespace()
+                .compareTo(other.dimension().location().getNamespace());
+        if (nsCmp != 0) return nsCmp;
         int dimCmp = this.dimension().location().getPath()
                 .compareTo(other.dimension().location().getPath());
         if (dimCmp != 0) return dimCmp;

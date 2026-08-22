@@ -29,12 +29,13 @@ public class IEMS {
 
     /**
      * 模组构造器：FML 会自动注入 IEventBus 与 ModContainer。
-     * 在此注册网络层（M7）与服务端事件（M6 区块常加载 + M7 快照推送）。
+     * 在此注册网络层（M7）与服务端事件（区块常加载、连接持久化、每 Tick 调度 + 快照推送）。
      */
     public IEMS(IEventBus modEventBus, ModContainer modContainer) {
         // M7: 注册网络包（GridSyncPayload 服务端 → 客户端）
         IEMSNetworking.register(modEventBus);
-        // M7: 挂载服务端事件（区块常加载回调 + 每 40 tick 电网快照推送）
+        // 服务端事件：区块常加载回调、连接持久化加载/落盘、
+        // 每 Tick 能量调度驱动 + 每 40 tick 电网快照推送、生命周期清理
         IEMSEvents.register();
         LOGGER.info("IEMS {} 已加载", modContainer.getModInfo().getVersion());
     }

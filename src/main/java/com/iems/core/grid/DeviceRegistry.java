@@ -4,6 +4,8 @@ import com.iems.core.node.CoreDevice;
 import com.iems.core.node.DimensionGate;
 import com.iems.core.node.IEnergyNode;
 import com.iems.core.node.TransferDevice;
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
 
 import java.math.BigInteger;
 import java.util.Collection;
@@ -23,10 +25,22 @@ public class DeviceRegistry {
 
     private static final DeviceRegistry INSTANCE = new DeviceRegistry();
 
+    private static final Logger LOGGER = LogUtils.getLogger();
+
     private final Map<GlobalPos, IEnergyNode> devices = new ConcurrentHashMap<>();
 
     private volatile CoreDevice core;
     private volatile GlobalPos corePos;
+
+    /**
+     * 当前关停是否由协议容量超限引起（M8）。
+     * <p>
+     * 区分「协议关停」与「手动关停」：只有协议关停才允许在用量回到限值内时
+     * 自动恢复供电；手动关停（如 /iems shutdown）不受设备增删影响，
+     * 直到管理员显式重启。
+     * </p>
+     */
+    private volatile boolean protocolShutdown = false;
 
     /**
      * 区块加载/卸载回调。
@@ -107,6 +121,7 @@ public class DeviceRegistry {
         }
         this.core = core;
         this.corePos = pos;
+        this.protocolShutdown = false;
         // M6: 触发核心区块常加载
         if (chunkLoadCallback != null) {
             chunkLoadCallback.accept(pos);
@@ -120,6 +135,24 @@ public class DeviceRegistry {
         }
         this.core = null;
         this.corePos = null;
+    }
+
+    /** 清空全部运行时状态（设备池/核心）。仅在服务器完全停止后由生命周期钩子调用（见 IEMSEvents）。 */
+    public void clearAll() {
+        devices.clear();
+        core = null;
+        corePos = null;
+        protocolShutdown = false;
+    }
+
+    /** 当前关停是否由协议超限引起（手动关停返回 false）。 */
+    public boolean isProtocolShutdown() {
+        return protocolShutdown;
+    }
+
+    /** 清除协议关停标志（手动 setGridActive 时调用，此后由容量检查重新裁定）。 */
+    public void clearProtocolShutdownFlag() {
+        protocolShutdown = false;
     }
 
     public CoreDevice getCore() {
@@ -140,9 +173,12 @@ public class DeviceRegistry {
     }
 
     /**
-     * 检查协议容量是否超限，若超限则关停电网。
+     * 检查协议容量并同步电网开关状态（V-01 修复：关停后可自动恢复）。
      * <p>
-     * 按白皮书第7.2节：protocolUsed > protocolTotal → 电网关停。
+     * 按白皮书第7.2节：protocolUsed &gt; protocolTotal → 电网关停；
+     * 用量回到限值以内 → 自动重新供电。M8 精化：只有「协议关停」才自动恢复，
+     * 手动关停（管理员指令）不受设备增删影响。
+     * 仅在状态需要翻转时才重建拓扑，避免每次注册/注销都触发无谓的 BFS 重扫。
      * </p>
      */
     private void checkProtocolLimit() {
@@ -151,11 +187,19 @@ public class DeviceRegistry {
         }
         BigInteger used = getProtocolUsed();
         BigInteger limit = core.getProtocolLimit();
-        if (used.compareTo(limit) > 0) {
-            // 超限，关停电网
+        boolean over = used.compareTo(limit) > 0;
+        if (over && core.isGridActive()) {
+            // 超限运行中 → 关停（标记协议原因，拆除设备回到限内后可自动恢复）
             core.setGridActive(false);
+            protocolShutdown = true;
+            GridTopology.instance().rebuild();
+        } else if (!over && !core.isGridActive() && protocolShutdown) {
+            // 协议关停 + 用量已回到限内 → 自动恢复供电
+            core.setGridActive(true);
+            protocolShutdown = false;
             GridTopology.instance().rebuild();
         }
+        // 其余情况（正常/手动关停/已关停）不动作
     }
 
     private void linkDimensionGate(GlobalPos pos, DimensionGate gate) {
@@ -164,6 +208,12 @@ public class DeviceRegistry {
                 continue;
             }
             if (entry.getValue() instanceof DimensionGate other && other.getPairId().equals(gate.getPairId())) {
+                // V-07: 超出 maxPeers 时拒绝配对并告警，不再抛异常炸掉放置逻辑
+                if (!gate.canAcceptPeer() || !other.canAcceptPeer()) {
+                    LOGGER.warn("IEMS: 维度门配对被拒绝（超出 maxPeers 限制），pairId={} 位置={}",
+                            gate.getPairId(), pos);
+                    continue;
+                }
                 gate.addPeer(entry.getKey());
                 other.addPeer(pos);
             }
