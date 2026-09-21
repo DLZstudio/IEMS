@@ -8,8 +8,8 @@ import java.math.BigInteger;
 /**
  * 能量节点：接入 IEMS 电网的统一抽象。
  * <p>
- * 外部模组通过 new 具体实现（CoreDevice / TransferDevice / StorageDevice / DimensionGate）
- * 并调用 {@code IEMSAPI.registerDevice} 完成接入。
+ * 外部模组通过 new 具体实现（CoreDevice / TransferDevice / AbstractStorageDevice / DimensionGate，
+ * 或直接实现 StorageDevice / 经 DeviceAdapter 伪装接入）并调用 {@code IEMSAPI.registerDevice} 完成接入。
  * 节点只暴露参数与状态，不持有对电网或其它节点的对象引用（实例自治）。
  * </p>
  */

@@ -593,10 +593,11 @@ EnergyOverlayRenderer.setConnectingMode(false, null, 0);
 | M6 | 0.8.0-beta-M6 | 核心区块常加载 + DeviceRegistry 回调机制 | ✅ |
 | M7 | 0.8.0-beta-M7 | 渲染系统 + 激光连接（GridSyncPayload/锚点/跨维度光晕） | ✅ |
 | M8 | 0.8.0-beta-M8 | 指令系统 + HUD + P0/P1 修复批次（连接持久化/调度契约/生命周期清理） | ✅ |
-| M9 | 0.8.0-beta-M9 | Web 监控面板（JSON 数据接口） | 规划中 |
-| M10 | 0.8.0-beta | 完整文档 + 单测基线 + 正式发布 | 规划中 |
+| M9 | 0.8.0-beta-M9 | P0/P1 修复批次 + NFDS/NFDA（DS/DA 体系）逐设备化改造 | ✅ |
+| M10 | 0.8.0-beta | Web 监控面板（JSON 数据接口）+ 完整文档 + 单测基线 + 正式发布 | 规划中 |
 
-> NFDS/NFDA 适配器（FE 桥接）原计划 M5，实际执行中顺延至 M9+；
+> NFDS/NFDA 适配器（FE 桥接）原计划 M5，实际执行中顺延至 M9（已随 M9 落地）；
+> Web 监控面板（JSON 数据接口）顺延至 M10；
 > 单元测试基线（V-13）为 M10 发布门槛。
 
 ---

@@ -1,8 +1,12 @@
 package com.iems.core.node;
 
+import com.iems.adapter.DeviceAdapter;
+import com.iems.adapter.FEDA;
 import com.iems.core.grid.GlobalPos;
 import com.iems.core.grid.GridTopology;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.world.phys.Vec3;
 
 import java.math.BigInteger;
@@ -15,6 +19,14 @@ import java.util.List;
  * <p>
  * 电网中的连接节点，负责激光连接与路由。每个实例持有独立的连接参数。
  * </p>
+ * <p>
+ * <b>DS/DA 集成（M9+）</b>：支持自动连接的传输设备持有可插拔的
+ * {@link DeviceAdapter} 列表——内建 {@link FEDA} 在自身连接半径内经 NFDS
+ * 发现外部 FE 设备，伪装成独立节点（逐设备）接入电网（外部设备自身
+ * 成为注册节点，由调度器直接结算，本节点不再聚合桥接账目）。
+ * 不支持自动连接的传输设备为纯传输节点（无适配器，也不得手动连接用电/发电器）。
+ * 适配器不是独立方块——外部 FE 设备入网的唯一通道是自动中继器。
+ * </p>
  */
 public class TransferDevice implements IEnergyNode {
 
@@ -25,7 +37,11 @@ public class TransferDevice implements IEnergyNode {
     private final List<String> whitelist;
     private final List<String> blacklist;
 
-    private IConnectionStrategy connectionStrategy;
+    /**
+     * 可插拔设备适配器列表（M9+）：自动连接实例默认装配 {@link FEDA}，
+     * 其余为纯传输节点（无适配器，外部设备不进网）。
+     */
+    private final List<DeviceAdapter> adapters;
 
     /** 注册位置（位置即身份，由注册表在 register 时注入）。 */
     private volatile GlobalPos position;
@@ -60,6 +76,25 @@ public class TransferDevice implements IEnergyNode {
                           List<String> whitelist,
                           List<String> blacklist,
                           Vec3 anchorOffset) {
+        this(deviceName, protocolCost, maxConnectionDistance, autoConnect, whitelist, blacklist,
+                anchorOffset, List.of());
+    }
+
+    /**
+     * 扩展构造：可在默认 FE 适配器之外追加额外可插拔适配器（如未来 AE2DA）。
+     * <p>
+     * autoConnect == true 时默认装配 {@link FEDA}；额外适配器始终追加
+     * （非自动中继也可携带自定义适配器，扩展用）。
+     * </p>
+     */
+    public TransferDevice(String deviceName,
+                          BigInteger protocolCost,
+                          int maxConnectionDistance,
+                          boolean autoConnect,
+                          List<String> whitelist,
+                          List<String> blacklist,
+                          Vec3 anchorOffset,
+                          List<DeviceAdapter> extraAdapters) {
         this.deviceName = deviceName;
         this.protocolCost = protocolCost;
         this.maxConnectionDistance = maxConnectionDistance;
@@ -67,6 +102,15 @@ public class TransferDevice implements IEnergyNode {
         this.whitelist = whitelist == null ? List.of() : new ArrayList<>(whitelist);
         this.blacklist = blacklist == null ? List.of() : new ArrayList<>(blacklist);
         this.anchorOffset = anchorOffset == null ? new Vec3(0.5, 0.5, 0.5) : anchorOffset;
+        // M9+：自动连接实例默认装配 FE 适配器（DS/DA 逐设备接入）
+        List<DeviceAdapter> combined = new ArrayList<>();
+        if (autoConnect) {
+            combined.add(new FEDA(this));
+        }
+        if (extraAdapters != null) {
+            combined.addAll(extraAdapters);
+        }
+        this.adapters = List.copyOf(combined);
     }
 
     /** 激光连接锚点偏移（相对方块坐标）。 */
@@ -93,21 +137,21 @@ public class TransferDevice implements IEnergyNode {
         return autoConnect;
     }
 
+    /**
+     * 可插拔设备适配器列表（M9+）。
+     * <p>FeBridgeTicker 以此识别桥接宿主并驱动各适配器；外部模组可读取
+     * 适配器名下节点与状态。</p>
+     */
+    public List<DeviceAdapter> getAdapters() {
+        return adapters;
+    }
+
     public List<String> getWhitelist() {
         return Collections.unmodifiableList(whitelist);
     }
 
     public List<String> getBlacklist() {
         return Collections.unmodifiableList(blacklist);
-    }
-
-    /** 运行时替换连接策略。 */
-    public void updateStrategy(IConnectionStrategy strategy) {
-        this.connectionStrategy = strategy;
-    }
-
-    public IConnectionStrategy getConnectionStrategy() {
-        return connectionStrategy;
     }
 
     /** 注册表维护：注入本设备位置（位置即身份）。 */
@@ -137,12 +181,24 @@ public class TransferDevice implements IEnergyNode {
         tag.putFloat("anchorX", (float) anchorOffset.x);
         tag.putFloat("anchorY", (float) anchorOffset.y);
         tag.putFloat("anchorZ", (float) anchorOffset.z);
+        // 黑白名单持久化（P1 修复：此前缺失，数据驱动的外部模组区块重载后过滤规则丢失）
+        tag.put("whitelist", toStringList(whitelist));
+        tag.put("blacklist", toStringList(blacklist));
+        // 适配器账目不持久化：伪装节点由 FEDA 首次重扫重建（无工厂 ID 不落盘）
         return tag;
+    }
+
+    private static ListTag toStringList(List<String> values) {
+        ListTag list = new ListTag();
+        for (String value : values) {
+            list.add(StringTag.valueOf(value));
+        }
+        return list;
     }
 
     @Override
     public void restoreState(CompoundTag tag) {
-        // 构造参数为 final，restore 仅用于校验/读取，重建实例由外部模组负责。
-        // 这里不修改 final 字段；外部模组读取 NBT 后用参数重新 new 实例。
+        // 构造参数为 final（含适配器列表，随 autoConnect 装配），实例重建由
+        // 外部模组工厂负责；伪装节点不持久化，此处无需恢复桥接账目。
     }
 }

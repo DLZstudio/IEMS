@@ -8,3 +8,21 @@ pluginManagement {
 plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
+
+// 历史背景：net.neoforged.gradle.userdev 插件在 apply 阶段会向项目注册官方
+// maven.neoforged.net 仓库并立即解析依赖，该仓库当时在国内无法直连（卡在 SYN_SENT），
+// 故曾在此把官方仓库 URL 重写到国内镜像。
+// 2026-09-16 起禁用重写：官方源已恢复直连可达，且镜像 mirror.zcswo.cn 故障（502）
+// 时该重写会把插件自动注册的官方仓库一并劫持到故障镜像，切断全部兜底路径。
+// 现在 pluginManagement 与 build.gradle 均已显式配置「镜像优先 + 官方源兜底」。
+// gradle.beforeProject { project ->
+//     project.repositories.whenObjectAdded { repo ->
+//         if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository) {
+//             def repoUrl = repo.url.toString()
+//             if (repoUrl.contains("maven.neoforged.net")) {
+//                 logger.lifecycle("Redirect (settings) {} -> mirror.zcswo.cn", repoUrl)
+//                 repo.setUrl(uri("https://mirror.zcswo.cn/neoforge/releases"))
+//             }
+//         }
+//     }
+// }

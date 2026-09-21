@@ -43,12 +43,22 @@ runs {
 }
 
 repositories {
-    // NeoForge 依赖走国内镜像仓库（mirror.zcswo.cn）
+    // NeoForge 依赖走国内镜像仓库（mirror.zcswo.cn），官方源兜底（2026-09-16：
+    // 镜像 502 故障期间官方源已可直连，双源保证构建韧性）
     maven {
         name = "NeoForged Mirror"
         url = uri("https://mirror.zcswo.cn/neoforge/releases")
         content {
             includeGroup "net.neoforged"
+        }
+    }
+    maven {
+        name = "NeoForged Official"
+        url = uri("https://maven.neoforged.net/releases")
+        content {
+            includeGroup "net.neoforged"
+            includeGroup "net.neoforged.fancymodloader"
+            includeGroup "cpw.mods"
         }
     }
 }
@@ -73,6 +83,7 @@ tasks.withType(ProcessResources).configureEach {
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
             neo_version            : neo_version,
+            neo_version_range       : neo_version_range,
             loader_version_range   : loader_version_range,
             mod_id                 : mod_id,
             mod_name               : mod_name,

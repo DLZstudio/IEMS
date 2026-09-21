@@ -1,89 +1,44 @@
 package com.iems.core.node;
 
 import com.iems.core.energy.EnergyValue;
-import net.minecraft.nbt.CompoundTag;
 
 import java.math.BigInteger;
 
 /**
- * 储能节点（StorageDevice）。
+ * 储能节点接口（StorageDevice）。
  * <p>
- * 电网中的能量缓存节点，负责充放电。
+ * 电网中的能量缓存节点，负责充放电。调度器（{@code EnergyDispatcher}）在
+ * 盈余时调用 {@link #onChargeTick}、短缺时调用 {@link #onDischargeTick}。
+ * </p>
+ * <p>
+ * <b>M9+ 演进</b>：由具体类接口化——原生 SE 储能的标准实现为
+ * {@link AbstractStorageDevice}；DA（DeviceAdapter）可对双向外部设备
+ * （如 FE 电池）实现本接口伪装接入，与原生储能同权（一个设备一个身份，
+ * 占用协议容量），调度器以统一的充放电语义结算，不区分 SE 原生或外部适配。
  * </p>
  */
-public class StorageDevice implements IEnergyNode {
-
-    private final String deviceName;
-    private final BigInteger protocolCost;
-    private final BigInteger maxEnergy;
-    private final BigInteger ioRatePerTick;
-
-    private BigInteger storedEnergy = BigInteger.ZERO;
-
-    public StorageDevice(String deviceName, BigInteger protocolCost, BigInteger maxEnergy, BigInteger ioRatePerTick) {
-        this.deviceName = deviceName;
-        this.protocolCost = protocolCost;
-        this.maxEnergy = maxEnergy;
-        this.ioRatePerTick = ioRatePerTick;
-    }
-
-    @Override
-    public String getDeviceName() {
-        return deviceName;
-    }
-
-    @Override
-    public BigInteger getProtocolCost() {
-        return protocolCost;
-    }
-
-    public BigInteger getMaxEnergy() {
-        return maxEnergy;
-    }
-
-    public BigInteger getIoRatePerTick() {
-        return ioRatePerTick;
-    }
-
-    public BigInteger getStoredEnergy() {
-        return storedEnergy;
-    }
+public interface StorageDevice extends IEnergyNode {
 
     /**
      * 调度器调用：传入盈余，返回实际充入量。
+     * <p>实现方自行按「容量余量 / 每 tick 吞吐上限」双重约束节流，
+     * 返回量不应超过传入盈余。</p>
      */
-    public EnergyValue onChargeTick(EnergyValue surplus) {
-        EnergyValue space = EnergyValue.ofSE(maxEnergy.subtract(storedEnergy));
-        EnergyValue rateCap = EnergyValue.ofSE(ioRatePerTick);
-        EnergyValue actual = surplus.min(space).min(rateCap).max(EnergyValue.ZERO);
-        storedEnergy = storedEnergy.add(actual.toSE());
-        return actual;
-    }
+    EnergyValue onChargeTick(EnergyValue surplus);
 
     /**
      * 调度器调用：传入缺口，返回实际放出量。
+     * <p>实现方自行按「当前储量 / 每 tick 吞吐上限」双重约束节流，
+     * 返回量不应超过传入缺口。</p>
      */
-    public EnergyValue onDischargeTick(EnergyValue deficit) {
-        EnergyValue available = EnergyValue.ofSE(storedEnergy);
-        EnergyValue rateCap = EnergyValue.ofSE(ioRatePerTick);
-        EnergyValue actual = deficit.min(available).min(rateCap).max(EnergyValue.ZERO);
-        storedEnergy = storedEnergy.subtract(actual.toSE());
-        return actual;
-    }
+    EnergyValue onDischargeTick(EnergyValue deficit);
 
-    @Override
-    public CompoundTag serializeState() {
-        CompoundTag tag = new CompoundTag();
-        tag.putString("deviceName", deviceName);
-        tag.putString("protocolCost", protocolCost.toString());
-        tag.putString("maxEnergy", maxEnergy.toString());
-        tag.putString("ioRatePerTick", ioRatePerTick.toString());
-        tag.putString("storedEnergy", storedEnergy.toString());
-        return tag;
-    }
+    /** 当前储能（SE）。 */
+    BigInteger getStoredEnergy();
 
-    @Override
-    public void restoreState(CompoundTag tag) {
-        this.storedEnergy = new BigInteger(tag.getString("storedEnergy"));
-    }
+    /** 最大储能（SE）。 */
+    BigInteger getMaxEnergy();
+
+    /** 每 tick 最大吞吐（SE）。 */
+    BigInteger getIoRatePerTick();
 }
