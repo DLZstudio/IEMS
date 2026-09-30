@@ -36,8 +36,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *       {@link #tick} 每 tick 抽取 FE（≤ maxFePerTick）喂入抽取缓冲，调度器
  *       读取折算的整 SE 产出；</li>
  *   <li>纯消费者（canReceive 且不可抽取）→ {@link FeConsumerAdapter}；
- *       {@link #tick} 每 tick 测外部接收余量写入需求申报（0/1 SE），调度器
- *       分配后折算 FE 入推送池，由 {@link #tick} 以 maxFePerTick 送抵外部；</li>
+ *       {@link #tick} 每 tick 测外部接收余量写入需求申报（按一 tick 送抵量与
+ *       SE 汇率折算的 SE 量），调度器分配后折算 FE 入推送池，由 {@link #tick}
+ *       以 maxFePerTick 送抵外部；</li>
  *   <li>双向设备（canExtract 且 canReceive）→ {@link FeBufferAdapter}
  *       （StorageDevice，充放电统一储能契约）。</li>
  * </ul>
@@ -106,7 +107,8 @@ public class FEDA implements DeviceAdapter {
     }
 
     /**
-     * 同步适配节点（每 40 tick）：新设备注册建连、消失设备注销、宿主失效清扫。
+     * 同步适配节点（每 20 tick，见 {@link FeBridgeTicker}）：新设备注册建连、
+     * 消失设备注销、宿主失效清扫。
      */
     @Override
     public void sync(ServerLevel level) {
@@ -180,14 +182,16 @@ public class FEDA implements DeviceAdapter {
                     }
                 }
             } else if (node instanceof FeConsumerAdapter consumer) {
-                consumer.buffer().updateExternalFree(reachable ? freeOf(storage) : BigInteger.ZERO);
+                consumer.buffer().updateExternalFree(reachable ? freeOf(storage) : BigInteger.ZERO,
+                        maxFePerTick);
             } else if (node instanceof FeBufferAdapter bufferNode) {
                 // IEnergyStorage 无每 tick 速率查询，以适配器传输上限为吞吐上报
                 bufferNode.setLiveState(
                         BigInteger.valueOf(storage.getEnergyStored()),
                         BigInteger.valueOf(storage.getMaxEnergyStored()),
                         maxFePerTick);
-                bufferNode.buffer().updateExternalFree(reachable ? freeOf(storage) : BigInteger.ZERO);
+                bufferNode.buffer().updateExternalFree(reachable ? freeOf(storage) : BigInteger.ZERO,
+                        maxFePerTick);
             }
         }
 
@@ -253,6 +257,13 @@ public class FEDA implements DeviceAdapter {
         // silentRegister：不入自动扫描队列（避免 IemsAutoConnector 建非桥接连接）、
         // 不持久化（无工厂 ID → 重启后由首次 sync 重扫重建）
         DeviceRegistry.instance().silentRegister(pos, node, null);
+        // M-04 归属校验：该位置已被其它宿主/真实设备占位时 silentRegister 静默 no-op，
+        // 此时不得建桥接连接、不得纳入名下——否则 detach/dropNode 会误注销他人节点
+        if (DeviceRegistry.instance().get(pos) != node) {
+            GridDiagnostics.event("adapter-%s skip %s @ %s (occupied)",
+                    unit().getName(), node.getClass().getSimpleName(), pos);
+            return;
+        }
         IEMSAPI.addConnection(hostPos, pos, ConnectionType.ADAPTER_BRIDGE);
         managed.put(pos, node);
         GridDiagnostics.event("adapter+%s %s @ %s (%s)",

@@ -31,7 +31,8 @@ import java.math.BigInteger;
  * </ul>
  * <p>
  * 拉线模式（外部模组拉电线时）：{@link #setConnectingMode(boolean, GlobalPos, int)}
- * 由外部模组调用，显示起点到玩家的实时距离，超出 maxLength+10 自动取消并提示。
+ * 由外部模组调用，显示起点到玩家的实时距离，超出 maxLength+10 自动取消并提示；
+ * 维度改变（穿传送门 / 跨维度 TP）时起点坐标失效，同样自动取消并提示。
  * </p>
  */
 @EventBusSubscriber(value = Dist.CLIENT)
@@ -57,6 +58,21 @@ public class EnergyOverlayRenderer {
     private static GlobalPos startPos = null;
     private static int maxLength = 0;
 
+    // ------------------------------------------------------------------
+    // 四象限功率 EMA 平滑（M9 HUD 第二行）
+    // ------------------------------------------------------------------
+
+    /** EMA 时间常数（秒）：约 1.5s 收敛，避免数值跳变。 */
+    private static final double QUADRANT_EMA_TAU = 1.5;
+
+    private static double smoothActualIn = 0.0;
+    private static double smoothTotalIn = 0.0;
+    private static double smoothActualOut = 0.0;
+    private static double smoothTotalOut = 0.0;
+
+    /** 上次 EMA 更新的纳秒时间戳（0 = 尚未初始化）。 */
+    private static long lastEmaNanos = 0L;
+
     /** 获取连接模式状态（供其他类访问）。 */
     public static boolean isConnectingMode() {
         return isConnectingMode;
@@ -80,10 +96,23 @@ public class EnergyOverlayRenderer {
         return maxLength;
     }
 
+    /** 获取拉线起点（未拉线时为 null）；外部模组应以本方法返回值为唯一状态源。 */
+    public static GlobalPos getStartPos() {
+        return startPos;
+    }
+
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Pre event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
+
+        // 拉线模式：维度变化（穿传送门 / 跨维度 TP）→ 旧起点坐标在新维度里没有意义，
+        // 立即收线。否则下面的同维度超距检查会被跳过，HUD 会一直停在诱饵文案
+        // "连接中... 0m"（幽灵拉线态），且玩家不知道线已经废了。
+        if (isConnectingMode && startPos != null && startPos.dimension() != mc.level.dimension()) {
+            mc.player.displayClientMessage(Component.literal("§c维度已改变，连接已自动取消"), true);
+            setConnectingMode(false, null, 0);
+        }
 
         // 拉线模式：检查是否超出最大距离（仅同维度比较）
         if (isConnectingMode && startPos != null && startPos.dimension() == mc.level.dimension()) {
@@ -95,6 +124,16 @@ public class EnergyOverlayRenderer {
                 setConnectingMode(false, null, maxLength);
             }
         }
+
+        // 四象限 EMA 平滑：以真实帧间隔衰减，客户端帧率波动时曲线仍平滑
+        long nowNanos = System.nanoTime();
+        double dt = lastEmaNanos == 0L ? 0.05 : (nowNanos - lastEmaNanos) / 1.0e9;
+        lastEmaNanos = nowNanos;
+        double alpha = 1.0 - Math.exp(-dt / QUADRANT_EMA_TAU);
+        smoothActualIn += (toDouble(ClientGridCache.getActualIn()) - smoothActualIn) * alpha;
+        smoothTotalIn += (toDouble(ClientGridCache.getTotalIn()) - smoothTotalIn) * alpha;
+        smoothActualOut += (toDouble(ClientGridCache.getActualOut()) - smoothActualOut) * alpha;
+        smoothTotalOut += (toDouble(ClientGridCache.getTotalDemandOut()) - smoothTotalOut) * alpha;
     }
 
     @SubscribeEvent
@@ -122,6 +161,32 @@ public class EnergyOverlayRenderer {
 
         // 绘制文字
         guiGraphics.drawString(mc.font, text, x + BAR_WIDTH / 2 - mc.font.width(text) / 2, y + 12, TEXT_COLOR, true);
+
+        // 第二行：四象限功率（↑ 输入 / ↓ 输出，SE/tick；EMA 平滑）
+        String quadrantText = buildQuadrantText();
+        guiGraphics.drawString(mc.font, quadrantText,
+                x + BAR_WIDTH / 2 - mc.font.width(quadrantText) / 2, y + 24, TEXT_COLOR, true);
+    }
+
+    /** 四象限功率文案：{@code ↑ 实际输入/总输入  ↓ 实际输出/总输出 SE/tick}。 */
+    private static String buildQuadrantText() {
+        return "§b↑ " + Math.round(smoothActualIn) + "/" + Math.round(smoothTotalIn)
+                + "  §6↓ " + Math.round(smoothActualOut) + "/" + Math.round(smoothTotalOut)
+                + " §7SE/t";
+    }
+
+    /** 复位四象限平滑状态（退出世界时调用，防止旧世界数值残留）。 */
+    public static void resetSmoothing() {
+        smoothActualIn = 0.0;
+        smoothTotalIn = 0.0;
+        smoothActualOut = 0.0;
+        smoothTotalOut = 0.0;
+        lastEmaNanos = 0L;
+    }
+
+    /** BigInteger → double（四象限为每 tick 数值，量级小，double 精度足够）。 */
+    private static double toDouble(BigInteger value) {
+        return value == null ? 0.0 : value.doubleValue();
     }
 
     /** 拉线模式文案：实时距离 + 超距警告。 */

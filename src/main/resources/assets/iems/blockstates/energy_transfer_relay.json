@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "iems:block/energy_transfer_relay" }
+  }
+}

@@ -12,13 +12,14 @@ import java.math.BigInteger;
  * 只维护数值状态；外部能力读写由 {@link FEDA} 每 tick 驱动。
  * </p>
  * <ul>
- *   <li><b>抽取侧</b> {@code feBuffer}：从外部抽取的 FE 尘埃累积。SE 量级巨大
- *       （1 SE = 9×10²⁶ FE），单 tick 抽取量折算 SE 后通常不足 1，余数跨 tick
+ *   <li><b>抽取侧</b> {@code feBuffer}：从外部抽取的 FE 尘埃累积。单 tick 抽取量
+ *       折算 SE 后往往不足 1（取决于 {@code Energy.toml} 配置的汇率），余数跨 tick
  *       累积，攒满 1 SE 整体产出（{@link #produceSE}，守恒不丢）；</li>
  *   <li><b>推送侧</b> {@code pushBuffer}：电网分配的整 SE 折算 FE 入池（上限 =
- *       需求申报 1 SE），由 DA 以 maxFePerTick 速率逐步送抵外部（平滑推送）；
+ *       需求申报），由 DA 以 maxFePerTick 速率逐步送抵外部（平滑推送）；
  *       余量留池结转，不凭空蒸发。</li>
- *   <li><b>需求申报</b>：外部有接收余量且推送池空时申报 1 SE（最小申报粒度）。</li>
+ *   <li><b>需求申报</b>：外部有接收余量且推送池空时申报一次，申报量按
+ *       「覆盖一 tick 送抵上限」折算为 SE（见 {@link #updateExternalFree}）。</li>
  * </ul>
  */
 public final class FeConversionBuffer {
@@ -29,7 +30,7 @@ public final class FeConversionBuffer {
     /** 推送侧缓冲池：电网分配的整 SE 折算 FE 入池，由 DA 逐步送抵外部。 */
     private BigInteger pushBuffer = BigInteger.ZERO;
 
-    /** 本 tick 需求申报（SE 粒度，0 或 1；外部有接收余量且推送池空时为 1）。 */
+    /** 本 tick 需求申报（SE 粒度，≥0；外部有接收余量且推送池空时按一 tick 送抵量折算）。 */
     private volatile BigInteger cachedDemand = BigInteger.ZERO;
 
     public FeConversionBuffer() {
@@ -70,15 +71,28 @@ public final class FeConversionBuffer {
     // ------------------------------------------------------------------
 
     /**
-     * 登记外部接收端的剩余容量（FE）。
-     * <p>平滑推送：外部有接收余量且推送池空时，向电网申报 1 SE 需求——
-     * SE 量级巨大，FE 设备的真实余量折算 SE 后不足 1，故以 1 SE 为最小
-     * 申报粒度（入池上限即 1 SE）；推送池未清空前不再申报。</p>
+     * 登记外部接收端的剩余容量（FE）并计算需求申报。
+     * <p>平滑推送：外部有接收余量且推送池空时申报一次 SE 需求，推送池未清空前
+     * 不再申报。申报量按「一 tick 可送抵的 FE」折算，即至少覆盖
+     * {@code maxFePerTick}，否则汇率越低推送池越浅、吞吐会被压到
+     * {@code fePerSe} FE/tick（旧实现固定申报 1 SE，仅在 1 SE = 9×10²⁶ FE
+     * 时恰好等价于「一 tick 用不完」）。</p>
+     *
+     * @param feFreeTotal  外部接收端剩余容量（FE）
+     * @param maxFePerTick 本适配器单 tick 送抵上限（FE），用于确定申报粒度
      */
-    public void updateExternalFree(BigInteger feFreeTotal) {
+    public void updateExternalFree(BigInteger feFreeTotal, int maxFePerTick) {
         BigInteger free = feFreeTotal == null ? BigInteger.ZERO : feFreeTotal.max(BigInteger.ZERO);
-        boolean roomAvailable = free.signum() > 0 && pushBuffer.signum() == 0;
-        cachedDemand = roomAvailable ? BigInteger.ONE : BigInteger.ZERO;
+        if (free.signum() <= 0 || pushBuffer.signum() != 0) {
+            cachedDemand = BigInteger.ZERO;
+            return;
+        }
+        BigInteger perSe = fePerSe();
+        BigInteger tickBudget = BigInteger.valueOf(Math.max(1, maxFePerTick));
+        BigInteger feWanted = free.min(tickBudget);
+        // 向上取整：申报的 SE 折算回 FE 后必须 ≥ 一 tick 的送抵上限
+        BigInteger se = feWanted.add(perSe).subtract(BigInteger.ONE).divide(perSe);
+        cachedDemand = se.max(BigInteger.ONE);
     }
 
     /** 当前需求申报（SE 粒度，纯查询，≥0）。 */

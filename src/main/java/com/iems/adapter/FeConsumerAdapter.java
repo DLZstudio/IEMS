@@ -10,9 +10,10 @@ import java.math.BigInteger;
  * 外部 FE 纯消费者伪装节点（逐设备）。
  * <p>
  * 每台 {@code !canExtract && canReceive} 的外部设备对应一个独立节点，
- * 协议容量 = 1。需求申报（0/1 SE）由 {@link FEDA} 每 tick 测余量后写入
- * {@link FeConversionBuffer}；调度器分配后经 {@link #consumePerTick} 折算
- * FE 入推送池，由 FEDA 以 maxFePerTick 速率送抵外部。
+ * 协议容量 = 1。需求申报由 {@link FEDA} 每 tick 测余量后写入
+ * {@link FeConversionBuffer}（按一 tick 送抵上限与 SE 汇率折算为 SE 量）；
+ * 调度器分配后经 {@link #consumePerTick} 折算 FE 入推送池，
+ * 由 FEDA 以 maxFePerTick 速率送抵外部。
  * </p>
  */
 public class FeConsumerAdapter implements IEnergyNode, IEnergyConsumer, IAdapterNode {
@@ -27,7 +28,7 @@ public class FeConsumerAdapter implements IEnergyNode, IEnergyConsumer, IAdapter
         this.owner = owner;
     }
 
-    /** 纯查询：当前需求申报（0 或 1 SE，由外部接收余量决定）。 */
+    /** 纯查询：当前需求申报（SE，由外部接收余量与 SE 汇率决定，≥0）。 */
     @Override
     public BigInteger queryDemand() {
         return buffer.queryDemand();

@@ -8,7 +8,8 @@ import java.util.Map;
  * 能量换算器。
  * <p>
  * 换算系数以 FE 为基准，默认值取自 {@link EnergyUnit}，
- * 可通过 {@link #setFeFactor(EnergyUnit, BigInteger)} 在运行时覆盖（对应配置文件 iems.toml）。
+ * 可通过 {@link #setFeFactor(EnergyUnit, BigInteger)} 在运行时覆盖
+ * （SE 汇率由配置文件 {@code config/DLZstudio/IEMS/Energy.toml} 驱动，见 {@link EnergyConfig}）。
  * 内部标准单位为 SE，所有能量运算均以 BigInteger 精确进行。
  * </p>
  */

@@ -111,6 +111,9 @@ public class CoreDevice implements IEnergyNode {
     public void restoreState(CompoundTag tag) {
         this.protocolLimit = new BigInteger(tag.getString("protocolLimit"));
         this.gridActive = tag.getBoolean("gridActive");
-        this.currentEnergy = new BigInteger(tag.getString("currentEnergy"));
+        // L-04：存档值钳制到 [0, 容量]——防损坏/篡改存档导致能量越界
+        //（与 setCurrentEnergy 同口径），否则负能量会污染全局结算
+        this.currentEnergy = new BigInteger(tag.getString("currentEnergy"))
+                .max(BigInteger.ZERO).min(energyCapacity);
     }
 }

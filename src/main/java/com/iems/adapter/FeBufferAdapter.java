@@ -18,9 +18,10 @@ import java.math.BigInteger;
  *   <li><b>充电（SE → FE）</b>：{@link #onChargeTick} 折算 FE 入推送池，
  *       由 {@link FEDA} 每 tick 送抵外部（同消费节点推送语义）；</li>
  *   <li><b>放电（FE → SE）</b>：{@link #onDischargeTick} 把抽取侧 FE 尘埃
- *       折算整 SE。SE 量级巨大（1 SE = 9×10²⁶ FE），真实 FE 设备存量折算后
- *       通常为 0——调度器如实看到「空电池」，本路径在 SE 级储能设备出现前
- *       实际不生效（语义正确：FE 级电池确实无法支撑 SE 级电网缺口）；</li>
+ *       折算整 SE。折算量取决于 {@code Energy.toml} 配置的 SE 汇率——
+ *       汇率高时真实 FE 设备存量折算后可能不足 1 SE，调度器如实看到
+ *       「空电池」（语义正确：FE 级电池确实无法支撑 SE 级电网缺口）；
+ *       汇率低时 FE 设备可正常参与电网储能；</li>
  *   <li><b>储量汇报</b>：{@link #getStoredEnergy}/{@link #getMaxEnergy}/
  *       {@link #getIoRatePerTick} 实时代理外部能力（由 FEDA 每 tick 探测刷新，
  *       不本地缓存——外部设备自身在耗/充）。</li>

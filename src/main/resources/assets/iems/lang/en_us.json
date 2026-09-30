@@ -1,2 +1,5 @@
 {
+  "itemGroup.iems": "IEMS",
+  "block.iems.energy_transfer_relay": "Energy Transfer Relay",
+  "block.iems.energy_broadcast_tower": "Energy Broadcast Tower"
 }

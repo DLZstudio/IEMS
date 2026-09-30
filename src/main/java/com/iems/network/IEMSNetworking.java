@@ -16,11 +16,16 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * IEMS 网络层（M7 S1/S2）。
@@ -40,7 +45,24 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
  */
 public final class IEMSNetworking {
 
+    /**
+     * H-02：请求者须位于终点设备水平范围内的最大距离（方块）。
+     * 取宽松值（原版触及约 4.5、创造约 5），留出延迟/视线判定余量。
+     */
+    private static final double MAX_INTERACT_DISTANCE = 12.0;
+
+    /** H-02：同一玩家两次 C2S 建连请求的最小间隔（毫秒），抑制刷包。 */
+    private static final long MIN_REQUEST_INTERVAL_MS = 250L;
+
+    /** H-02：每玩家上次请求时间戳（毫秒）；服务器停止时清理。 */
+    private static final Map<UUID, Long> LAST_REQUEST_MS = new ConcurrentHashMap<>();
+
     private IEMSNetworking() {
+    }
+
+    /** H-02：清空频率限制表（服务器停止时调用，防跨世界残留）。 */
+    public static void resetRateLimiter() {
+        LAST_REQUEST_MS.clear();
     }
 
     /**
@@ -86,6 +108,16 @@ public final class IEMSNetworking {
         context.enqueueWork(() -> {
             DeviceRegistry registry = DeviceRegistry.instance();
 
+            // H-02：频率限制——同一玩家 250ms 内重复请求直接丢弃（静默，避免刷屏）
+            long nowMs = System.currentTimeMillis();
+            Long lastMs = LAST_REQUEST_MS.get(player.getUUID());
+            if (lastMs != null && nowMs - lastMs < MIN_REQUEST_INTERVAL_MS) {
+                GridDiagnostics.event("C2S reject: rate limited (by %s)",
+                        player.getGameProfile().getName());
+                return;
+            }
+            LAST_REQUEST_MS.put(player.getUUID(), nowMs);
+
             if (payload.start().equals(payload.end())) {
                 GridDiagnostics.event("C2S reject: same endpoint %s (by %s)",
                         payload.start(), player.getGameProfile().getName());
@@ -95,6 +127,15 @@ public final class IEMSNetworking {
                 GridDiagnostics.event("C2S reject: cross-dimension %s -> %s (by %s)",
                         payload.start(), payload.end(), player.getGameProfile().getName());
                 reject(player, "§c跨维度连接需使用维度门");
+                return;
+            }
+            // H-02：玩家邻近校验（服务端权威）——请求者必须与终点设备同维度、
+            // 且位于触及范围内；防止伪造坐标隔着半个世界建连（客户端预检不可信）
+            if (!player.level().dimension().equals(payload.end().dimension())
+                    || player.position().distanceTo(Vec3.atCenterOf(payload.end().pos())) > MAX_INTERACT_DISTANCE) {
+                GridDiagnostics.event("C2S reject: player too far from end %s (by %s)",
+                        payload.end(), player.getGameProfile().getName());
+                reject(player, "§c你距离目标设备太远");
                 return;
             }
             // 端点注册校验：核心不在设备池（由 corePos 单独索引），

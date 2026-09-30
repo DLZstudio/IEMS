@@ -2,6 +2,7 @@ package com.iems.core.grid;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,16 +30,42 @@ public class GridSnapshot {
     /** 核心位置（无核心时为 null）。 */
     private final GlobalPos corePos;
 
+    /**
+     * 主网设备的 BFS 深度（核心 = 0，每跨一条连接 +1，M9 波接力）。
+     * <p>
+     * 驱动客户端通电/断电波沿链路接力推进：激光段的就绪延迟按两端深度
+     * 插值——第二跳起点要等第一跳长度的时间才亮起，能量从核心
+     * 一跳跳流向全网（旧版逐设备就绪时间表的精简等效实现）。
+     * </p>
+     */
+    private final Map<GlobalPos, Integer> deviceDepths;
+
+    /** 主网最大深度（波动画总时长基准）。无核心时为 0。 */
+    private final int maxDepth;
+
     public GridSnapshot(Set<GlobalPos> mainNetwork,
                         List<Set<GlobalPos>> orphanNetworks,
                         Set<Connection> pendingConnections,
                         boolean gridShutdown,
                         GlobalPos corePos) {
+        this(mainNetwork, orphanNetworks, pendingConnections, gridShutdown, corePos,
+                Map.of(), 0);
+    }
+
+    public GridSnapshot(Set<GlobalPos> mainNetwork,
+                        List<Set<GlobalPos>> orphanNetworks,
+                        Set<Connection> pendingConnections,
+                        boolean gridShutdown,
+                        GlobalPos corePos,
+                        Map<GlobalPos, Integer> deviceDepths,
+                        int maxDepth) {
         this.mainNetwork = Collections.unmodifiableSet(mainNetwork);
         this.orphanNetworks = orphanNetworks.stream().map(Collections::unmodifiableSet).toList();
         this.pendingConnections = Collections.unmodifiableSet(pendingConnections);
         this.gridShutdown = gridShutdown;
         this.corePos = corePos;
+        this.deviceDepths = Collections.unmodifiableMap(deviceDepths);
+        this.maxDepth = maxDepth;
     }
 
     /** 空快照（无核心或尚未首次扫描）。 */
@@ -71,6 +98,16 @@ public class GridSnapshot {
         return corePos;
     }
 
+    /** 主网设备 BFS 深度表（核心 = 0；无核心时为空表）。 */
+    public Map<GlobalPos, Integer> getDeviceDepths() {
+        return deviceDepths;
+    }
+
+    /** 主网最大 BFS 深度（无核心时为 0）。 */
+    public int getMaxDepth() {
+        return maxDepth;
+    }
+
     /** 指定位置是否位于核心可达网络（已接入电网）。 */
     public boolean isReachable(GlobalPos pos) {
         return mainNetwork.contains(pos);
@@ -87,6 +124,7 @@ public class GridSnapshot {
                 + ", orphans=" + orphanNetworks.size()
                 + ", pending=" + pendingConnections.size()
                 + ", shutdown=" + gridShutdown
-                + ", core=" + corePos + '}';
+                + ", core=" + corePos
+                + ", maxDepth=" + maxDepth + '}';
     }
 }

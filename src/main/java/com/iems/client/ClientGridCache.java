@@ -41,6 +41,21 @@ public final class ClientGridCache {
     /** 当前电网全部连接（跨维度）。不可变快照，由网络线程替换引用。 */
     private static volatile List<Connection> connections = List.of();
 
+    /**
+     * 孤岛连接（两端均已注册、但未接入核心电网）。不可变快照。
+     * <p>此前该列表在客户端被丢弃，导致「没连核心时拉线成功却看不到激光」，
+     * 玩家误判连接失败。现按旧 IEMS 语义以恒定红色渲染（没电）。</p>
+     */
+    private static volatile List<Connection> islandConnections = List.of();
+
+    /**
+     * 适配器桥接连接（{@code ADAPTER_BRIDGE}）：适配器中继器 ↔ 外部 FE 设备。不可变快照。
+     * <p>两端均在设备池内，但不属于能量电网连线（不参与「没电变红」语义），
+     * 需独立列表渲染为青色桥接带（见 {@link ConnectionLaserRenderer}）。
+     * 此前该列表在客户端被丢弃，导致设计中的青色桥接带始终不可见。</p>
+     */
+    private static volatile List<Connection> adapterBridges = List.of();
+
     /** 核心位置（无核心时为 null）。 */
     private static volatile GlobalPos corePos = null;
 
@@ -65,6 +80,22 @@ public final class ClientGridCache {
 
     /** 协议容量上限。 */
     private static volatile BigInteger protocolTotal = BigInteger.ZERO;
+
+    // ------------------------------------------------------------------
+    // 四象限功率（M9，由 GridSyncPayload 随快照推送 → HUD 第二行）
+    // ------------------------------------------------------------------
+
+    /** 总输出：全注册表消费者需求 Σ + 外部负载 (SE/tick)。 */
+    private static volatile BigInteger totalDemandOut = BigInteger.ZERO;
+
+    /** 实际输出：主网实际消耗 + 外部负载 (SE/tick)。 */
+    private static volatile BigInteger actualOut = BigInteger.ZERO;
+
+    /** 总输入：核心自发电 + 外部输入 + 主网产出 (SE/tick)。 */
+    private static volatile BigInteger totalIn = BigInteger.ZERO;
+
+    /** 当前输入：主网设备产出 (SE/tick)。 */
+    private static volatile BigInteger actualIn = BigInteger.ZERO;
 
     // ------------------------------------------------------------------
     // 动画状态
@@ -98,6 +129,8 @@ public final class ClientGridCache {
      */
     public static void clearAll() {
         connections = List.of();
+        islandConnections = List.of();
+        adapterBridges = List.of();
         corePos = null;
         gridShutdown = false;
         connectedDeviceCount = 0;
@@ -109,6 +142,10 @@ public final class ClientGridCache {
         totalCapacity = BigInteger.ZERO;
         protocolUsed = BigInteger.ZERO;
         protocolTotal = BigInteger.ZERO;
+        totalDemandOut = BigInteger.ZERO;
+        actualOut = BigInteger.ZERO;
+        totalIn = BigInteger.ZERO;
+        actualIn = BigInteger.ZERO;
     }
 
     /**
@@ -123,8 +160,12 @@ public final class ClientGridCache {
         updateCorePos(payload.corePos());
         updateGridState(payload.shutdown(), payload.deviceCount());
         updateConnections(payload.connections());
+        updateIslandConnections(payload.islandConnections());
+        updateAdapterBridges(payload.adapterBridges());
         updateGridStats(payload.currentEnergy(), payload.totalCapacity(),
                 payload.protocolUsed(), payload.protocolTotal());
+        updateQuadrantStats(payload.totalDemandOut(), payload.actualOut(),
+                payload.totalIn(), payload.actualIn());
 
         // 进度映射：主网可达设备通电进度 = 1.0；电网关停时 = 0.0（断电变红）
         clearProgress();
@@ -156,6 +197,16 @@ public final class ClientGridCache {
         connections = List.copyOf(newConnections);
     }
 
+    /** 全量替换孤岛连接列表（网络线程）。 */
+    public static void updateIslandConnections(List<Connection> newConnections) {
+        islandConnections = List.copyOf(newConnections);
+    }
+
+    /** 全量替换适配器桥接连接列表（网络线程）。 */
+    public static void updateAdapterBridges(List<Connection> newBridges) {
+        adapterBridges = List.copyOf(newBridges);
+    }
+
     /** 更新核心位置（网络线程）。 */
     public static void updateCorePos(GlobalPos pos) {
         corePos = pos;
@@ -174,6 +225,18 @@ public final class ClientGridCache {
         totalCapacity = capacity == null ? BigInteger.ZERO : capacity;
         protocolUsed = used == null ? BigInteger.ZERO : used;
         protocolTotal = limit == null ? BigInteger.ZERO : limit;
+    }
+
+    /**
+     * 更新四象限功率（网络线程，M9 HUD 第二行）。
+     * <p>顺序：{@code [总输出, 实际输出, 总输入, 当前输入]} (SE/tick)。</p>
+     */
+    public static void updateQuadrantStats(BigInteger demandOut, BigInteger realOut,
+                                           BigInteger in, BigInteger realIn) {
+        totalDemandOut = demandOut == null ? BigInteger.ZERO : demandOut;
+        actualOut = realOut == null ? BigInteger.ZERO : realOut;
+        totalIn = in == null ? BigInteger.ZERO : in;
+        actualIn = realIn == null ? BigInteger.ZERO : realIn;
     }
 
     /** 设置断电动画状态（网络线程）。 */
@@ -216,8 +279,31 @@ public final class ClientGridCache {
      * 在当前维度时也会返回，由渲染器决定如何绘制该端的门光晕。
      */
     public static List<Connection> getConnections(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+        return filterByDimension(connections, dimension);
+    }
+
+    /**
+     * 孤岛连接按维度过滤：两端均已注册、但未接入核心电网的连接。
+     * <p>调用契约与 {@link #getConnections(net.minecraft.resources.ResourceKey)} 一致。</p>
+     */
+    public static List<Connection> getIslandConnections(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+        return filterByDimension(islandConnections, dimension);
+    }
+
+    /**
+     * 适配器桥接连接按维度过滤（两端均在设备池内，但非电网连线）。
+     * <p>调用契约与 {@link #getConnections(net.minecraft.resources.ResourceKey)} 一致。</p>
+     */
+    public static List<Connection> getAdapterBridges(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+        return filterByDimension(adapterBridges, dimension);
+    }
+
+    /** 按维度过滤：至少一端位于该维度（含跨维度桥的当前维度端）。 */
+    private static List<Connection> filterByDimension(
+            List<Connection> source,
+            net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
         List<Connection> result = new ArrayList<>();
-        for (Connection c : connections) {
+        for (Connection c : source) {
             if (c.start().dimension().equals(dimension) || c.end().dimension().equals(dimension)) {
                 result.add(c);
             }
@@ -263,6 +349,26 @@ public final class ClientGridCache {
     /** 协议容量上限（HUD 用，M8）。 */
     public static BigInteger getProtocolTotal() {
         return protocolTotal;
+    }
+
+    /** 总输出：全注册表消费者需求 Σ + 外部负载 (SE/tick)（HUD 第二行，M9）。 */
+    public static BigInteger getTotalDemandOut() {
+        return totalDemandOut;
+    }
+
+    /** 实际输出：主网实际消耗 + 外部负载 (SE/tick)（HUD 第二行，M9）。 */
+    public static BigInteger getActualOut() {
+        return actualOut;
+    }
+
+    /** 总输入：核心自发电 + 外部输入 + 主网产出 (SE/tick)（HUD 第二行，M9）。 */
+    public static BigInteger getTotalIn() {
+        return totalIn;
+    }
+
+    /** 当前输入：主网设备产出 (SE/tick)（HUD 第二行，M9）。 */
+    public static BigInteger getActualIn() {
+        return actualIn;
     }
 
     /** 是否处于断电动画中。 */

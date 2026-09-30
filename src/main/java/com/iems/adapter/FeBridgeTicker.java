@@ -18,7 +18,7 @@ import net.minecraft.server.level.ServerLevel;
  *       生产节点缓冲、测余量喂需求申报、把推送池送抵外部（抽取与测余量在
  *       结算前完成，数值供本 tick 调度器消费）；同时清扫孤儿伪装节点
  *       （宿主中继器已注销 → 逐台注销名下节点，含 ADAPTER_BRIDGE 连接自动移除）；</li>
- *   <li><b>每 40 tick</b> {@link #tickRescan}：{@link DeviceAdapter#sync}
+ *   <li><b>每 20 tick</b> {@link #tickRescan}：{@link DeviceAdapter#sync}
  *       对比扫描报告与已注册节点，新设备注册建连、消失设备注销
  *       （存量直查，规避 DiscoveryScanner 跳过已注册位置的问题）。</li>
  * </ul>
@@ -29,8 +29,8 @@ import net.minecraft.server.level.ServerLevel;
  */
 public final class FeBridgeTicker {
 
-    /** 目标重扫间隔（tick）：40 tick = 2 秒。 */
-    private static final int RESCAN_INTERVAL_TICKS = 40;
+    /** 目标重扫间隔（tick）：20 tick = 1 秒（原 40 tick；缩短以提升自动接入响应速度）。 */
+    private static final int RESCAN_INTERVAL_TICKS = 20;
 
     private FeBridgeTicker() {
     }

@@ -13,7 +13,7 @@ import java.util.List;
  * 每个适配器绑定一台支持自动连接的 {@link com.iems.core.node.TransferDevice}，
  * 把 DS（DeviceScanner，见 {@link com.iems.discovery.DiscoveryScanner}）发现的
  * 外部能量设备伪装成 {@code IEnergyNode} 注册进电网（逐设备节点），并在
- * 每 tick 执行 SE ↔ 目标单位（FE/AE/GE…）的双向转换读写。
+ * 每 tick 执行 SE ↔ 目标单位（FE/AE…）的双向转换读写。
  * </p>
  * <p>
  * 调度器只认节点接口（IEnergyProducer / IEnergyConsumer / StorageDevice），
@@ -23,7 +23,7 @@ import java.util.List;
  */
 public interface DeviceAdapter {
 
-    /** 适配的能源体系单位（FE/AE/GE…）。 */
+    /** 适配的能源体系单位（FE/AE…）。 */
     EnergyUnit unit();
 
     /** 周期扫描：请求 DS 扫描以 {@code center} 为圆心的覆盖范围，返回本适配器关注的设备清单。 */

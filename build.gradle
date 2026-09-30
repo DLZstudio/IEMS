@@ -43,6 +43,8 @@ runs {
 }
 
 repositories {
+    // M10 单测基线（V-13）：JUnit 5 依赖走 Maven Central
+    mavenCentral()
     // NeoForge 依赖走国内镜像仓库（mirror.zcswo.cn），官方源兜底（2026-09-16：
     // 镜像 502 故障期间官方源已可直连，双源保证构建韧性）
     maven {
@@ -61,6 +63,15 @@ repositories {
             includeGroup "cpw.mods"
         }
     }
+    // GeckoLib 官方 Maven 仓库（中继器/广播塔 3D 模型渲染）
+    maven {
+        name = "GeckoLib"
+        url = uri("https://dl.cloudsmith.io/public/geckolib3/geckolib/maven/")
+        content {
+            includeGroupByRegex("software\\.bernie.*")
+            includeGroup "com.eliotlash.mclib"
+        }
+    }
 }
 
 configurations {
@@ -69,6 +80,36 @@ configurations {
 
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
+
+    // GeckoLib：示例设备（能源传输中继器 / 能源广播塔）的 3D 模型渲染
+    implementation "software.bernie.geckolib:geckolib-neoforge-1.21.1:${geckolib_version}"
+
+    // M10 单测基线（V-13）：JUnit 5
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// M10 单测基线（V-13）：Windows 下 JDK launcher 按 sun.jnu.encoding(GBK) 解码
+// @argfile 传入的 classpath，含中文路径（F:\备份\...）的条目会被损坏，导致测试类
+// ClassNotFoundException。解法：将 test runtime classpath 全量同步到纯 ASCII 目录，
+// 使 test worker 的 classpath 不包含任何中文路径。
+def asciiTestCpDir = file("${System.getProperty('user.home')}/.gradle/caches/iems-test-cp")
+
+tasks.register('syncTestClasspath', Sync) {
+    group = 'verification'
+    description = 'Sync test runtime classpath into an ASCII-only directory.'
+    from configurations.testRuntimeClasspath
+    from sourceSets.main.output
+    from sourceSets.test.output
+    into asciiTestCpDir
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    dependsOn tasks.named('syncTestClasspath')
+    // 类目录 + 平铺的 jar 共同构成纯 ASCII classpath
+    classpath = files(asciiTestCpDir) + files(fileTree(asciiTestCpDir).matching { include '**/*.jar' }.files)
 }
 
 sourceSets.main.resources {

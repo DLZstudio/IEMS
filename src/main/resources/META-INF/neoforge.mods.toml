@@ -8,7 +8,11 @@ modId="${mod_id}" #mandatory
 version="${mod_version}" #mandatory
 displayName="${mod_name}" #mandatory
 authors="${mod_authors}"
-description='''${mod_description}'''
+description='''${mod_description}
+
+内置第三方组件 / Bundled third-party component:
+GeckoLib 4.8.4 (https://github.com/bernie-g/geckolib) 以 Jar-in-Jar 方式随本模组分发（META-INF/jarjar/）。
+其版权与许可声明见嵌套 JAR 内的 LICENSE_GeckoLib 4，同为 MIT License。'''
 
 [[dependencies.${mod_id}]]
     modId="neoforge"
@@ -23,3 +27,11 @@ description='''${mod_description}'''
     versionRange="${minecraft_version_range}"
     ordering="NONE"
     side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="geckolib"
+    type="required"
+    versionRange="[4.7.2,)"
+    ordering="AFTER"
+    side="BOTH"
+    reason="示例设备（中继器/广播塔）3D 模型渲染；其方块实体属公共代码（implements GeoBlockEntity），两端均需安装"

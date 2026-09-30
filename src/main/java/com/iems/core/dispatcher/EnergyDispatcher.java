@@ -13,6 +13,7 @@ import com.iems.core.node.StorageDevice;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
@@ -23,8 +24,14 @@ import java.util.Set;
  * 在电网快照（{@link GridSnapshot}）的主网络内，按优先级平衡供给与需求：
  * <ul>
  *   <li>若总有能量 ≥ 总需求：消费者全额满足；盈余依次充入储能，再溢出存入核心。</li>
- *   <li>若总有能量 < 总需求：储能先放电补缺，再按优先级从高到低逐次满足，直到能量耗尽。</li>
+ *   <li>若总有能量 < 总需求：储能先放电补缺，外部负载基线先行扣除，
+ *       剩余预算按优先级从高到低逐次满足消费者，直到能量耗尽。</li>
  *   <li>电网关停（协议超限）时不做任何分配，所有设备断电。</li>
+ *   <li>分帧轮转：消费/储能设备每 tick 只处理一帧（帧大小 = 设备总数 1/10，下限 8），
+ *       窗口随游标循环推进，帧外设备最迟数 tick 内被服务（不饥饿）；
+ *       生产者与核心自发电每 tick 全量采样（脉冲契约）。</li>
+ *   <li>外部功率源：INPUT 计入总供给；OUTPUT（registerPowerOutput）作为
+ *       恒定基线负荷计入总需求，先于消费者扣减。</li>
  * </ul>
  * 驱动入口为 {@link #dispatchAtTick(int)}（由 IEMSEvents 每 Tick 调用，
  * 同一 tick 幂等）。外部模组不应再自行驱动，重复结算会导致能量凭空翻倍。
@@ -41,6 +48,56 @@ public final class EnergyDispatcher {
 
     /** 上一次结算的服务器 tick（同一 tick 重复调用直接跳过，防止双重结算）。 */
     private static int lastDispatchTick = Integer.MIN_VALUE;
+
+    /** 分帧轮转游标（P0 修复）：每 tick 前进 frameSize，使处理窗口在设备列表上循环推进。 */
+    private static int rotationOffset = 0;
+
+    /** 上一 tick 统计（诊断输出用，GridDiagnostics 读取）。 */
+    private static volatile String lastTickStats = "idle";
+
+    // -------------------------------------------------------------------------
+    // 四象限功率统计（M9，HUD 第二行数据源）
+    // -------------------------------------------------------------------------
+
+    /** 总输出：全注册表消费者需求 Σ（含休眠/孤岛设备）+ 外部负载基线 (SE/tick)。 */
+    private static volatile BigInteger totalDemandOut = BigInteger.ZERO;
+    /** 实际输出：本 tick 主网实际消耗 + 外部负载 (SE/tick)。 */
+    private static volatile BigInteger actualOut = BigInteger.ZERO;
+    /** 总输入：本 tick 总供给 = 核心自发电 + 外部输入 + 主网产出 (SE/tick)。 */
+    private static volatile BigInteger totalIn = BigInteger.ZERO;
+    /** 当前输入：本 tick 主网设备产出（不含核心自发电/外部源）(SE/tick)。 */
+    private static volatile BigInteger actualIn = BigInteger.ZERO;
+
+    /**
+     * 四象限功率统计（上一 tick）：{@code [总输出, 实际输出, 总输入, 当前输入]} (SE/tick)。
+     * <p>
+     * 模拟化后「所有设备」= 注册表全量（含区块卸载中的休眠设备），故总口径
+     * 按全注册表求和（{@code queryDemand} 纯查询无副作用，可全域调用）；
+     * 「当前运行」按本 tick 主网结算口径。孤岛生产者不计入输入——
+     * {@code producePerTick} 有副作用（脉冲契约），全域求和会双重扰频。
+     * </p>
+     */
+    public static BigInteger[] getQuadrantStats() {
+        return new BigInteger[]{totalDemandOut, actualOut, totalIn, actualIn};
+    }
+
+    private static void clearQuadrantStats() {
+        totalDemandOut = BigInteger.ZERO;
+        actualOut = BigInteger.ZERO;
+        totalIn = BigInteger.ZERO;
+        actualIn = BigInteger.ZERO;
+    }
+
+    /** 全注册表消费者需求 Σ（含休眠/孤岛设备；queryDemand 纯查询，无副作用）。 */
+    private static BigInteger computeRegistryDemand() {
+        BigInteger sum = BigInteger.ZERO;
+        for (IEnergyNode node : DeviceRegistry.instance().getAll()) {
+            if (node instanceof IEnergyConsumer c) {
+                sum = sum.add(c.queryDemand());
+            }
+        }
+        return sum;
+    }
 
     /**
      * 计算动态帧大小：取设备总数的 1/FRAME_SIZE_RATIO，至少 8。
@@ -76,18 +133,27 @@ public final class EnergyDispatcher {
     /** 重置 tick 守卫（服务器停止后的生命周期清理，见 IEMSEvents.onServerStopped）。 */
     public static void resetTickGuard() {
         lastDispatchTick = Integer.MIN_VALUE;
+        rotationOffset = 0;
+        lastTickStats = "idle";
+        clearQuadrantStats();
+    }
+
+    /** 上一 tick 调度统计摘要（诊断用）：供给/需求/消费/充放/帧处理数。 */
+    public static String getLastTickStats() {
+        return lastTickStats;
     }
 
     /**
-     * 直接结算一次（不经过 tick 守卫，仅供调试/测试使用）。
+     * 直接结算一次（不经过 tick 守卫，仅供内部调试/测试使用）。
      * <p>
      * 常规驱动已内置：IEMSEvents 每 Tick 调用 {@link #dispatchAtTick(int)}。
-     * 外部模组不要再自行调用，同一 Tick 多次结算会导致能量重复计入。
+     * 本方法为 package-private（B-1 修复）：外部模组无法直接调用，
+     * 杜绝同一 Tick 多次结算导致能量重复计入。
      * </p>
      *
      * @param frameSize 每帧最多处理的设备数；≤ 0 时按设备总数动态计算
      */
-    public static void dispatch(int frameSize) {
+    static void dispatch(int frameSize) {
         CoreDevice core = IEMSAPI.getRegistry().getCore();
         if (core == null) {
             return; // 无核心，跳过
@@ -97,7 +163,7 @@ public final class EnergyDispatcher {
     }
 
     /** 无参重载，根据当前设备总数动态计算帧大小。 */
-    public static void dispatch() {
+    static void dispatch() {
         dispatch(0);
     }
 
@@ -114,10 +180,14 @@ public final class EnergyDispatcher {
     static void dispatch(CoreDevice core, int frameSize) {
         GridSnapshot snap = IEMSAPI.getSnapshot();
         if (snap == null || snap.isEmpty()) {
+            lastTickStats = "no-core";
+            clearQuadrantStats();
             return;
         }
         // 电网关停（协议超限）：不分配任何能量，所有设备断电，核心能量冻结
         if (snap.isGridShutdown()) {
+            lastTickStats = "shutdown";
+            clearQuadrantStats();
             return;
         }
 
@@ -127,22 +197,47 @@ public final class EnergyDispatcher {
         List<DeviceEntry> storages = new ArrayList<>();
         collectDevices(DeviceRegistry.instance(), snap.getMainNetwork(), producers, consumers, storages);
 
-        if (producers.isEmpty() && consumers.isEmpty() && storages.isEmpty()) {
-            return; // 空网
-        }
-
-        // 2. 计算本 Tick 的总供给（核心自发电 + 外部功率源 + 生产者产出）
+        // 2. 本 Tick 供给的三项来源（核心自发电 + 外部输入功率源 + 生产者产出）
         BigInteger selfGen = core.getPowerGenRate();
         BigInteger externalInput = sumExternalInputs();
-        BigInteger produced = produceFrom(producers);
+        // 外部负载功率源（registerPowerOutput 接线）：按注册速率作为基线负荷恒定扣减
+        BigInteger externalOutput = sumExternalOutputs();
 
+        // 纯中继电网也必须累加自发电/外部输入并扣外部负载：
+        // 旧实现在无生产/消费/储能节点时整帧跳过，核心能量永远停在 0（P0 修复）
+        if (producers.isEmpty() && consumers.isEmpty() && storages.isEmpty()
+                && selfGen.signum() == 0 && externalInput.signum() == 0
+                && externalOutput.signum() == 0) {
+            lastTickStats = "idle";
+            // M9 四象限：主网空转，但全注册表休眠消费者的需求仍计入总输出
+            totalDemandOut = computeRegistryDemand();
+            actualOut = BigInteger.ZERO;
+            totalIn = BigInteger.ZERO;
+            actualIn = BigInteger.ZERO;
+            return;
+        }
+
+        // 3. 分帧轮转（P0 修复）：窗口随游标每 tick 前进 frameSize，
+        //    消除旧实现固定截断列表前 frameSize 个导致的帧外设备永久饥饿
+        applyFrameRotation(consumers, frameSize);
+        applyFrameRotation(storages, frameSize);
+        rotationOffset += frameSize;
+
+        BigInteger produced = produceFrom(producers);
         BigInteger totalSupply = selfGen.add(externalInput).add(produced);
         BigInteger currentEnergy = core.getCurrentEnergy();
 
-        // 3. 计算总需求（纯查询 queryDemand，无副作用）
-        BigInteger totalDemand = computeTotalDemand(consumers);
+        // 4. 总需求 = 消费者纯查询 + 外部负载（外部负载为恒定基线，先于消费者扣减）
+        BigInteger totalDemand = computeTotalDemand(consumers).add(externalOutput);
 
-        // 4. 预算 & 优先级分配
+        // M9 四象限功率统计（HUD 第二行数据源）：
+        // 总输出 = 全注册表消费者需求（含休眠/孤岛）+ 外部负载；总输入 = 本 tick 总供给；
+        // 当前输入 = 主网设备产出。实际输出在结算后填充（两分支均含外部负载）。
+        totalDemandOut = computeRegistryDemand().add(externalOutput);
+        totalIn = totalSupply;
+        actualIn = produced;
+
+        // 5. 预算 & 优先级分配
         BigInteger budget = currentEnergy.add(totalSupply);
         BigInteger shortfall = totalDemand.subtract(budget);
 
@@ -150,13 +245,38 @@ public final class EnergyDispatcher {
             // 供给充足：盈余先充入储能（避免核心容量溢出丢弃），再全额满足消费者
             BigInteger charged = chargeStorages(storages, budget.subtract(totalDemand), frameSize);
             BigInteger actualConsumed = satisfyAll(consumers, frameSize);
-            core.setCurrentEnergy(budget.subtract(actualConsumed).subtract(charged));
+            core.setCurrentEnergy(budget.subtract(externalOutput).subtract(actualConsumed).subtract(charged));
+            actualOut = actualConsumed.add(externalOutput);
+            lastTickStats = "sup=" + totalSupply + " dem=" + totalDemand
+                    + " cons=" + actualConsumed + " chg=" + charged
+                    + " [p" + producers.size() + " c" + consumers.size() + " s" + storages.size() + "]";
         } else {
-            // 供给不足：储能先放电补缺，再按优先级从高到低逐次满足，直到耗尽
+            // 供给不足：储能先放电补缺；外部负载基线先行扣除，
+            // 剩余预算按优先级从高到低逐次满足消费者，直到耗尽
             BigInteger discharged = dischargeStorages(storages, shortfall, frameSize);
-            BigInteger effectiveBudget = budget.add(discharged);
+            BigInteger effectiveBudget = budget.add(discharged).subtract(externalOutput).max(BigInteger.ZERO);
             BigInteger actualConsumed = distributeWithPriority(consumers, effectiveBudget, frameSize);
             core.setCurrentEnergy(effectiveBudget.subtract(actualConsumed).max(BigInteger.ZERO));
+            actualOut = actualConsumed.add(externalOutput);
+            lastTickStats = "DEFICIT sup=" + totalSupply + " dem=" + totalDemand
+                    + " cons=" + actualConsumed + " dis=" + discharged
+                    + " [p" + producers.size() + " c" + consumers.size() + " s" + storages.size() + "]";
+        }
+    }
+
+    /**
+     * 分帧轮转：把游标偏移旋转到列表头部，使本 tick 的处理窗口从游标处开始。
+     * <p>旧实现每 tick 固定截断列表前 frameSize 个，主网设备超过帧大小时
+     * 帧外设备永久得不到服务；轮转后每个设备最迟 ceil(size/frameSize) tick
+     * 被服务一次，分帧限载与公平性兼得。</p>
+     */
+    private static void applyFrameRotation(List<DeviceEntry> entries, int frameSize) {
+        int size = entries.size();
+        if (size > 1 && frameSize < size) {
+            int offset = Math.floorMod(rotationOffset, size);
+            if (offset != 0) {
+                Collections.rotate(entries, -offset);
+            }
         }
     }
 
@@ -191,7 +311,17 @@ public final class EnergyDispatcher {
                 .reduce(BigInteger.ZERO, BigInteger::add);
     }
 
-    /** 累计所有生产者的本 Tick 产出。 */
+    /** 累计外部负载功率源（已注册的 OUTPUT，基线负荷）。 */
+    private static BigInteger sumExternalOutputs() {
+        return IEMSAPI.getPowerOutputs().values().stream()
+                .reduce(BigInteger.ZERO, BigInteger::add);
+    }
+
+    /**
+     * 累计所有生产者的本 Tick 产出。
+     * <p>生产者不参与分帧截断：{@code producePerTick()} 对脉冲型核心（如每 20 tick
+     * 注入一次的实现）是「每 tick 恰好采样一次」的契约，帧外跳过会破坏其节拍。</p>
+     */
     private static BigInteger produceFrom(List<DeviceEntry> producers) {
         return producers.stream()
                 .map(e -> ((IEnergyProducer) e.node).producePerTick())

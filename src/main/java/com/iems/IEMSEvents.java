@@ -14,10 +14,14 @@ import com.iems.core.node.CoreDevice;
 import com.iems.core.node.IEnergyNode;
 import com.iems.diagnostics.GridDiagnostics;
 import com.iems.network.GridSyncPayload;
+import com.iems.network.IEMSNetworking;
+import com.iems.webpanel.IemsWebPanelSource;
+import com.iems.webpanel.WebPanelServer;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
@@ -87,6 +91,8 @@ public final class IEMSEvents {
         GridDiagnostics.event("server started: restored %d connections from save",
                 GridTopology.instance().getConnections().size());
         IEMS.LOGGER.info("IEMS: 电网连接已从存档恢复，休眠设备重建完成");
+        // M10：Web 监控面板（JSON 数据接口）随服务器启动
+        WebPanelServer.start(FMLPaths.CONFIGDIR.get(), IemsWebPanelSource.instance());
     }
 
     /** 挂载 GridSavedData 并把存档连接注入拓扑（V-04）。 */
@@ -184,8 +190,15 @@ public final class IEMSEvents {
         EnergyDispatcher.resetTickGuard();
         lastSyncTick = Integer.MIN_VALUE;
         lastSyncedTopologyVersion = -1;
+        // H-01：丢弃未执行的服务端任务（含等待中的 Web 面板请求），防跨世界残留
+        IEMSAPI.clearServerTasks();
+        IEMSNetworking.resetRateLimiter();
         GridDiagnostics.event("server stopped: state cleared");
         GridDiagnostics.close();
+        // M10：Web 面板随服务器完全停止而关闭（先于静态状态清理之后执行，仅停 HTTP 服务）
+        WebPanelServer.stop();
+        // M-02：清空 Web 面板时序缓冲，防单机切世界指标残留
+        IemsWebPanelSource.instance().reset();
     }
 
     // ------------------------------------------------------------------
@@ -195,6 +208,10 @@ public final class IEMSEvents {
     public static void onServerTick(ServerTickEvent.Pre event) {
         MinecraftServer server = event.getServer();
         int tick = server.getTickCount();
+
+        // H-01：先排空外部线程（Web 面板）提交的电网状态变更任务——
+        // 必须在任何状态读取/结算之前执行，变更本 tick 即生效
+        IEMSAPI.drainServerTasks();
 
         // DA 驱动（M9+，内建于自动中继器）：抽取/测余量/推送 + 孤儿清扫必须在
         // 结算前（数值供本 tick 消费），目标 diff 同步每 40 tick 一次
@@ -221,6 +238,11 @@ public final class IEMSEvents {
             lastSyncTick = tick;
             lastSyncedTopologyVersion = topologyVersion;
             pushGridSync(server);
+        }
+
+        // M10：Web 面板时序指标采样（每 20 tick = 1 秒一帧，环形缓冲）
+        if (tick % IemsWebPanelSource.METRIC_INTERVAL_TICKS == 0) {
+            IemsWebPanelSource.instance().sample();
         }
     }
 
@@ -264,14 +286,27 @@ public final class IEMSEvents {
         DeviceRegistry registry = IEMSAPI.getRegistry();
 
         // 主网可达连接（两端均已接入核心电网）
+        // 结构排除 ADAPTER_BRIDGE：适配器 ↔ 外部 FE 设备的桥接连接两端均在设备池内，
+        // 且随宿主设备一同可达，若不过滤会混进本列表被当作普通电网连线渲染
+        // （表现为「自动中继器被渲染出与自动连接的目标设备之间的激光」）。
+        // 桥接带由独立字段 bridges 承载，客户端按桥接样式渲染。
         List<Connection> reachable = GridTopology.instance().getConnections().stream()
+                .filter(c -> c.type() != ConnectionType.ADAPTER_BRIDGE)
                 .filter(c -> snap.isReachable(c.start()) && snap.isReachable(c.end()))
                 .toList();
 
         // 孤岛连接（M8.2）：两端均已注册但未接入核心电网 → 灰红激光可见。
+        // 端点有效性含核心豁免（与 GridTopology.findPendingConnections 对齐）：核心由
+        // corePos 单独索引、不在设备池，若只判 registry.get != null，核心↔设备的连接
+        // 在设备脱离主网时会既不进 reachable 也不进 islands——激光直接消失，
+        // 而非按「没电变红」语义渲染（旧 IEMS：无核心时整网变红）。
         // 边界连接（任一端未注册）仍不推送。
+        // 同样排除 ADAPTER_BRIDGE：桥接连接不是电网连线，不参与「没电变红」语义。
+        GlobalPos corePos = snap.getCorePos();
         List<Connection> islands = GridTopology.instance().getConnections().stream()
-                .filter(c -> registry.get(c.start()) != null && registry.get(c.end()) != null
+                .filter(c -> c.type() != ConnectionType.ADAPTER_BRIDGE)
+                .filter(c -> isRegisteredOrCore(c.start(), corePos, registry)
+                        && isRegisteredOrCore(c.end(), corePos, registry)
                         && !(snap.isReachable(c.start()) && snap.isReachable(c.end())))
                 .toList();
 
@@ -297,5 +332,13 @@ public final class IEMSEvents {
                 IEMSAPI.getProtocolUsed(),
                 IEMSAPI.getProtocolTotal(),
                 quadrant[0], quadrant[1], quadrant[2], quadrant[3]);
+    }
+
+    /**
+     * 端点是否有效注册：普通设备在设备池，核心由 corePos 单独索引（不在设备池）。
+     * <p>孤岛连接分类用，与 {@code GridTopology.findPendingConnections} 的核心豁免对齐。</p>
+     */
+    private static boolean isRegisteredOrCore(GlobalPos pos, GlobalPos corePos, DeviceRegistry registry) {
+        return registry.get(pos) != null || pos.equals(corePos);
     }
 }

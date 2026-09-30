@@ -1,5 +1,6 @@
 package com.iems;
 
+import com.iems.adapter.DeviceAdapter;
 import com.iems.api.IEMSAPI;
 import com.iems.core.grid.ConnectionType;
 import com.iems.core.grid.DeviceRegistry;
@@ -54,6 +55,14 @@ public final class IemsAutoConnector {
             }
             IEnergyNode node = registry.get(pos);
             if (node instanceof TransferDevice relay && relay.isAutoConnect()) {
+                // 刚注册的自动中继器：立即驱动一次适配器同步（不等 20 tick 重扫节拍），
+                // 使半径内已存在的 FE 设备即时入网——缩短「放下设备到建连」的等待时间
+                ServerLevel level = server.getLevel(pos.dimension());
+                if (level != null) {
+                    for (DeviceAdapter adapter : relay.getAdapters()) {
+                        adapter.sync(level);
+                    }
+                }
                 // 自动中继器注册 → 扫描附近可接入的非中继设备
                 scanFromRelay(server, registry, pos, relay);
             } else if (node != null) {
@@ -93,6 +102,12 @@ public final class IemsAutoConnector {
     /** 非中继设备注册：扫描范围内可接入它的自动中继器。 */
     private static void scanFromDevice(MinecraftServer server, DeviceRegistry registry,
                                        GlobalPos devicePos) {
+        // 结构排除：传输节点（含不支持自动连接的中继器）不是自动连接的目标——
+        // 中继器之间的连线一律手动拉线。否则刚放下的非自动中继器会被邻近的
+        // 自动中继器（如广播塔）反扫接入，表现为「中继器也会自动连接」。
+        if (registry.get(devicePos) instanceof TransferDevice) {
+            return;
+        }
         for (GlobalPos relayPos : registry.getAllPositions()) {
             if (relayPos.equals(devicePos) || !relayPos.dimension().equals(devicePos.dimension())) {
                 continue;
