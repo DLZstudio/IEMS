@@ -9,10 +9,10 @@ import com.iems.core.grid.GridTopology;
 import com.iems.core.node.CoreDevice;
 import com.iems.core.node.IEnergyNode;
 import com.iems.diagnostics.GridDiagnostics;
-import com.iems.discovery.DiscoveryReport;
-import com.iems.discovery.DiscoveryScanner;
-import com.iems.discovery.EnergyFlavor;
-import com.iems.discovery.IDiscoveryListener;
+import com.iems.eds.EDSReport;
+import com.iems.eds.EDSScanner;
+import com.iems.eds.EnergyFlavor;
+import com.iems.eds.IEDSListener;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
@@ -317,36 +317,49 @@ public final class IEMSAPI {
         POWER_OUTPUTS.remove(id);
     }
 
-    // ---------- NFDS 设备发现（M9，白皮书 §6.3） ----------
+    // ---------- EDS 设备发现（M9，白皮书 §6.3） ----------
 
     /**
-     * NFDS：扫描已加载区块内的外部能量设备（同步一次性调用）。
+     * EDS 设备发现 API（嵌套类，M9）。
      * <p>
-     * 只发现与分类（不注册/不建连/不换算）——发现的设备不进注册表，
-     * 桥接与否由 NFDA（监听器）自行决策。半径钳制 [1,128]，
-     * 未加载区块不可见。返回报告同时推送给全部发现监听器。
+     * EDS 只发现与分类（不注册/不建连/不换算），桥接与否由 EDA（监听器）
+     * 自行决策。详见各方法 javadoc。
      * </p>
      */
-    public static DiscoveryReport scanForDevices(ServerLevel level, BlockPos center, int radius) {
-        return DiscoveryScanner.scan(level, center, radius);
-    }
+    public static final class EDS {
 
-    /** NFDS：注册发现监听器（NFDA / 外部模组接入点，每次扫描后收到完整报告）。 */
-    public static void addDiscoveryListener(IDiscoveryListener listener) {
-        DiscoveryScanner.addDiscoveryListener(listener);
-    }
+        private EDS() {
+        }
 
-    /** NFDS：注销发现监听器。 */
-    public static void removeDiscoveryListener(IDiscoveryListener listener) {
-        DiscoveryScanner.removeDiscoveryListener(listener);
-    }
+        /**
+         * 扫描已加载区块内的外部能量设备（同步一次性调用）。
+         * <p>
+         * 只发现与分类（不注册/不建连/不换算）——发现的设备不进注册表，
+         * 桥接与否由 EDA（监听器）自行决策。半径钳制 [1,128]，
+         * 未加载区块不可见。返回报告同时推送给全部发现监听器。
+         * </p>
+         */
+        public static EDSReport scan(ServerLevel level, BlockPos center, int radius) {
+            return EDSScanner.scan(level, center, radius);
+        }
 
-    /**
-     * NFDS：注册模组能量体系身份（namespace → 单位/显示名）。
-     * 未注册的 namespace 默认 FE、以 namespace 自身为显示名。
-     */
-    public static void registerEnergyFlavor(EnergyFlavor flavor) {
-        DiscoveryScanner.registerEnergyFlavor(flavor);
+        /** 注册发现监听器（EDA / 外部模组接入点，重复注册会收到双份报告）。 */
+        public static void addListener(IEDSListener listener) {
+            EDSScanner.addListener(listener);
+        }
+
+        /** 注销发现监听器。 */
+        public static void removeListener(IEDSListener listener) {
+            EDSScanner.removeListener(listener);
+        }
+
+        /**
+         * 注册模组能量体系身份（namespace → 单位/显示名）。
+         * 未注册的 namespace 默认 FE、以 namespace 自身为显示名。
+         */
+        public static void registerFlavor(EnergyFlavor flavor) {
+            EDSScanner.registerFlavor(flavor);
+        }
     }
 
     /** 内部 API：供 GridTopology / EnergyDispatcher 等内部模块访问设备池。 */

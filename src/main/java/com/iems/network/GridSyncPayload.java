@@ -41,7 +41,7 @@ import java.util.Map;
  * 推送间隔由服务端 {@code IEMSEvents} 控制（每 40 tick）。
  * </p>
  * <p>
- * <b>v5（M9）</b>：+{@code adapterBridges} 列表——NFDA 桥接连接
+ * <b>v5（M9）</b>：+{@code adapterBridges} 列表——EDA 桥接连接
  * （{@code ADAPTER_BRIDGE}，适配器 ↔ 外部 FE 设备）。外部端点不进设备池，
  * 因此既不满足主网过滤（可达性）也不满足孤岛过滤（两端注册），
  * 需独立列表推送到客户端渲染青色桥接带。
@@ -60,7 +60,7 @@ import java.util.Map;
  * @param deviceCount       主网设备数（含核心），供客户端判断电网是否为空
  * @param connections       主网可达连接列表（不可变，含锚点偏移）
  * @param islandConnections 孤岛连接列表（两端已注册但不在主网，M8.2）
- * @param adapterBridges    NFDA 桥接连接列表（外部端点不在设备池，M9）
+ * @param adapterBridges    EDA 桥接连接列表（外部端点不在设备池，M9）
  * @param deviceDepths      主网设备 BFS 深度表（核心 = 0，M9 波接力）
  * @param maxDepth          主网最大 BFS 深度（M9 波接力）
  * @param currentEnergy     核心当前能量 (SE)，M8 HUD
@@ -145,7 +145,7 @@ public record GridSyncPayload(GlobalPos corePos, boolean shutdown, int deviceCou
         writeConnectionList(buf, payload.connections);
         // 孤岛连接列表（v3）
         writeConnectionList(buf, payload.islandConnections);
-        // NFDA 桥接连接列表（v5）
+        // EDA 桥接连接列表（v5）
         writeConnectionList(buf, payload.adapterBridges);
         // 主网设备深度表与最大深度（v6，波接力）
         Map<GlobalPos, Integer> depths = payload.deviceDepths == null ? Map.of() : payload.deviceDepths;

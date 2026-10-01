@@ -1,4 +1,4 @@
-package com.iems.discovery;
+package com.iems.eds;
 
 import com.iems.core.energy.EnergyUnit;
 import com.iems.core.grid.DeviceRegistry;
@@ -24,20 +24,20 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * NFDS 设备发现扫描器（v1）。
+ * EDS 设备发现扫描器（v1）。
  * <p>
  * 纯「半径球形范围 + 已加载区块」扫描：枚举范围内已加载区块的方块实体，
  * 探测 FE 能力（{@link Capabilities.EnergyStorage#BLOCK}，6 面 + 无方向共 7 个
- * 上下文），按 namespace 分类后产出 {@link DiscoveryReport} 推送监听者。
+ * 上下文），按 namespace 分类后产出 {@link EDSReport} 推送监听者。
  * </p>
  * <p>
  * <b>三不原则</b>：不注册（不进 DeviceRegistry）、不建连（不产生 Connection）、
- * 不换算（不做 SE↔FE 数值转换）——三者均为 NFDA 的决策域。
+ * 不换算（不做 SE↔FE 数值转换）——三者均为 EDA 的决策域。
  * 未加载区块对本扫描不可见（不报错、不强制加载）；纯方块能力提供者
  * （无方块实体）v1 不可见，属已知限制。
  * </p>
  */
-public final class DiscoveryScanner {
+public final class EDSScanner {
 
     /** 扫描半径钳制上限（格）。 */
     private static final int MAX_RADIUS = 128;
@@ -46,7 +46,7 @@ public final class DiscoveryScanner {
     private static final Map<String, EnergyFlavor> FLAVORS = new ConcurrentHashMap<>();
 
     /** 发现监听器（代码级注册，无生命周期清理；扫描完成后按注册序通知）。 */
-    private static final CopyOnWriteArrayList<IDiscoveryListener> LISTENERS = new CopyOnWriteArrayList<>();
+    private static final CopyOnWriteArrayList<IEDSListener> LISTENERS = new CopyOnWriteArrayList<>();
 
     /** 探测方向：6 面 + 无方向上下文（null）。 */
     private static final Direction[] PROBE_SIDES = {
@@ -58,27 +58,27 @@ public final class DiscoveryScanner {
                 new EnergyFlavor("appliedenergistics2", EnergyUnit.AE, "Applied Energistics"));
     }
 
-    private DiscoveryScanner() {
+    private EDSScanner() {
     }
 
     // ------------------------------------------------------------------
     // 监听器与身份轴注册
     // ------------------------------------------------------------------
 
-    /** 注册发现监听器（NFDA / 外部模组接入点，重复注册会收到双份报告）。 */
-    public static void addDiscoveryListener(IDiscoveryListener listener) {
+    /** 注册发现监听器（EDA / 外部模组接入点，重复注册会收到双份报告）。 */
+    public static void addListener(IEDSListener listener) {
         if (listener != null) {
             LISTENERS.addIfAbsent(listener);
         }
     }
 
     /** 注销发现监听器。 */
-    public static void removeDiscoveryListener(IDiscoveryListener listener) {
+    public static void removeListener(IEDSListener listener) {
         LISTENERS.remove(listener);
     }
 
     /** 注册/覆盖模组能量体系身份（namespace → 单位/显示名）；未注册 namespace 默认 FE。 */
-    public static void registerEnergyFlavor(EnergyFlavor flavor) {
+    public static void registerFlavor(EnergyFlavor flavor) {
         if (flavor != null && flavor.namespace() != null && !flavor.namespace().isEmpty()) {
             FLAVORS.put(flavor.namespace(), flavor);
         }
@@ -102,12 +102,12 @@ public final class DiscoveryScanner {
      * 每次扫描毫秒级（半径 128 ≈ 200 区块），无需 tick 分帧。
      * </p>
      */
-    public static DiscoveryReport scan(ServerLevel level, BlockPos center, int radius) {
+    public static EDSReport scan(ServerLevel level, BlockPos center, int radius) {
         int clamped = Math.max(1, Math.min(radius, MAX_RADIUS));
         DeviceRegistry registry = DeviceRegistry.instance();
         GlobalPos origin = GlobalPos.of(level.dimension(), center);
 
-        List<DiscoveredDevice> devices = new ArrayList<>();
+        List<EDSDevice> devices = new ArrayList<>();
         int chunksScanned = 0;
         int probed = 0;
         int skippedIems = 0;
@@ -138,7 +138,7 @@ public final class DiscoveryScanner {
                         skippedIems++; // 已接入 IEMS 电网的设备不是「外部设备」
                         continue;
                     }
-                    DiscoveredDevice device = probe(level, gp, entry.getValue());
+                    EDSDevice device = probe(level, gp, entry.getValue());
                     if (device != null) {
                         devices.add(device);
                     }
@@ -146,8 +146,8 @@ public final class DiscoveryScanner {
             }
         }
 
-        devices.sort(Comparator.comparing(DiscoveredDevice::pos));
-        DiscoveryReport report = new DiscoveryReport(origin, clamped, level.getGameTime(),
+        devices.sort(Comparator.comparing(EDSDevice::pos));
+        EDSReport report = new EDSReport(origin, clamped, level.getGameTime(),
                 List.copyOf(devices), chunksScanned, probed, skippedIems);
         GridDiagnostics.event("scan %s r=%d: found=%d probed=%d chunks=%d skippedIems=%d",
                 origin, clamped, devices.size(), probed, chunksScanned, skippedIems);
@@ -162,7 +162,7 @@ public final class DiscoveryScanner {
      * 容量最大的一个（快照语义）。全部方向无能力 → 返回 null（非能量设备）。
      * </p>
      */
-    private static DiscoveredDevice probe(ServerLevel level, GlobalPos gp, BlockEntity be) {
+    private static EDSDevice probe(ServerLevel level, GlobalPos gp, BlockEntity be) {
         boolean canExtract = false;
         boolean canReceive = false;
         Set<Direction> exposed = EnumSet.noneOf(Direction.class);
@@ -204,13 +204,13 @@ public final class DiscoveryScanner {
         EnergyUnit unit = flavor != null ? flavor.unit() : EnergyUnit.FE;
         String flavorName = flavor != null ? flavor.displayName() : namespace;
 
-        return new DiscoveredDevice(gp, blockId, namespace, unit, flavorName,
+        return new EDSDevice(gp, blockId, namespace, unit, flavorName,
                 canExtract, canReceive, stored, capacity, Set.copyOf(exposed));
     }
 
     /** 按注册序通知监听器；单个监听器异常捕获并告警，不影响其余监听器。 */
-    private static void notifyListeners(DiscoveryReport report) {
-        for (IDiscoveryListener listener : LISTENERS) {
+    private static void notifyListeners(EDSReport report) {
+        for (IEDSListener listener : LISTENERS) {
             try {
                 listener.onDiscovery(report);
             } catch (Exception e) {

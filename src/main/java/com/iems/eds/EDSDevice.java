@@ -1,4 +1,4 @@
-package com.iems.discovery;
+package com.iems.eds;
 
 import com.iems.core.energy.EnergyUnit;
 import com.iems.core.grid.GlobalPos;
@@ -8,9 +8,9 @@ import java.util.Set;
 import net.minecraft.core.Direction;
 
 /**
- * 单台外部设备的发现记录（NFDS v1，不可变）。
+ * 单台外部设备的发现记录（EDS v1，不可变）。
  * <p>
- * NFDS 只负责「找到并分类」——本记录是扫描时刻的快照，不是实时状态：
+ * EDS 只负责「找到并分类」——本记录是扫描时刻的快照，不是实时状态：
  * stored/capacity 取自发现时刻的能力探测，后续变化需重新扫描。
  * </p>
  *
@@ -23,18 +23,18 @@ import net.minecraft.core.Direction;
  * @param canReceive    7 方向能力并集：可接收能量（消费者）
  * @param stored        发现时刻存量（快照，单位为 {@code unit}）
  * @param capacity      最大容量（单位为 {@code unit}）
- * @param exposedSides  暴露能力的面（供 NFDA 决定从哪面取能；null 表示无方向上下文）
+ * @param exposedSides  暴露能力的面（供 EDA 决定从哪面取能；null 表示无方向上下文）
  */
-public record DiscoveredDevice(GlobalPos pos,
-                               String blockId,
-                               String namespace,
-                               EnergyUnit unit,
-                               String flavorName,
-                               boolean canExtract,
-                               boolean canReceive,
-                               BigInteger stored,
-                               BigInteger capacity,
-                               Set<Direction> exposedSides) {
+public record EDSDevice(GlobalPos pos,
+                        String blockId,
+                        String namespace,
+                        EnergyUnit unit,
+                        String flavorName,
+                        boolean canExtract,
+                        boolean canReceive,
+                        BigInteger stored,
+                        BigInteger capacity,
+                        Set<Direction> exposedSides) {
 
     /** 可输出能量（生产者）。 */
     public boolean isProducer() {

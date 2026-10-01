@@ -9,7 +9,7 @@ import com.iems.core.grid.GridTopology;
 import com.iems.core.node.IEnergyNode;
 import com.iems.core.node.TransferDevice;
 import com.iems.diagnostics.GridDiagnostics;
-import com.iems.discovery.DiscoveredDevice;
+import com.iems.eds.EDSDevice;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * FE 设备适配器（FEDA）——{@link DeviceAdapter} 的 FE 实现（本版本首个实现）。
  * <p>
  * 绑定一台<b>支持自动连接</b>的 {@link TransferDevice}（宿主中继器），在其
- * 连接半径内把 DS 发现的每台外部 FE 设备伪装成独立节点注册进电网
+ * 连接半径内把 EDS 发现的每台外部 FE 设备伪装成独立节点注册进电网
  * （逐设备节点，协议容量 = 设备数量，与原生 SE 设备同权）：
  * </p>
  * <ul>
@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *       （StorageDevice，充放电统一储能契约）。</li>
  * </ul>
  * <p>
- * <b>存量直查（关键坑规避）</b>：{@link com.iems.discovery.DiscoveryScanner}
+ * <b>存量直查（关键坑规避）</b>：{@link com.iems.eds.EDSScanner}
  * 会把已注册位置判为 skippedIems 跳过——逐设备节点落地后重扫必丢存量。
  * 本类自行维护 {@code managed} 集合：扫描报告<b>仅用于发现新设备</b>，
  * 存量设备在 {@link #sync} 中直查方块能力判定存在性。
@@ -99,9 +99,9 @@ public class FEDA implements DeviceAdapter {
     // ------------------------------------------------------------------
 
     @Override
-    public List<DiscoveredDevice> scan(ServerLevel level, BlockPos center, int radius) {
+    public List<EDSDevice> scan(ServerLevel level, BlockPos center, int radius) {
         GlobalPos hostPos = host.getPosition();
-        return IEMSAPI.scanForDevices(level, center, radius).devices().stream()
+        return IEMSAPI.EDS.scan(level, center, radius).devices().stream()
                 .filter(d -> hostPos == null || d.pos().dimension().equals(hostPos.dimension()))
                 .toList();
     }
@@ -122,7 +122,7 @@ public class FEDA implements DeviceAdapter {
         }
         // 1) 扫描报告仅用于发现新设备
         Set<GlobalPos> scanned = new HashSet<>();
-        for (DiscoveredDevice device : scan(level, hostPos.pos(), host.getMaxConnectionDistance())) {
+        for (EDSDevice device : scan(level, hostPos.pos(), host.getMaxConnectionDistance())) {
             scanned.add(device.pos());
             if (!managed.containsKey(device.pos())) {
                 registerDevice(level, hostPos, device);
@@ -248,7 +248,7 @@ public class FEDA implements DeviceAdapter {
     // ------------------------------------------------------------------
 
     /** 注册单台新设备：按能力分类包装 + silentRegister + 建 ADAPTER_BRIDGE。 */
-    private void registerDevice(ServerLevel level, GlobalPos hostPos, DiscoveredDevice device) {
+    private void registerDevice(ServerLevel level, GlobalPos hostPos, EDSDevice device) {
         GlobalPos pos = device.pos();
         IEnergyNode node = classify(device);
         if (node == null) {
@@ -271,7 +271,7 @@ public class FEDA implements DeviceAdapter {
     }
 
     /** 按设备能力分类包装成对应伪装节点；无可用分类返回 null。 */
-    private IEnergyNode classify(DiscoveredDevice device) {
+    private IEnergyNode classify(EDSDevice device) {
         String name = unit().getName() + "/" + device.blockId();
         boolean producer = device.isProducer();
         boolean consumer = device.isConsumer();

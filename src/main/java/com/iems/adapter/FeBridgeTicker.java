@@ -20,7 +20,7 @@ import net.minecraft.server.level.ServerLevel;
  *       （宿主中继器已注销 → 逐台注销名下节点，含 ADAPTER_BRIDGE 连接自动移除）；</li>
  *   <li><b>每 20 tick</b> {@link #tickRescan}：{@link DeviceAdapter#sync}
  *       对比扫描报告与已注册节点，新设备注册建连、消失设备注销
- *       （存量直查，规避 DiscoveryScanner 跳过已注册位置的问题）。</li>
+ *       （存量直查，规避 EDSScanner 跳过已注册位置的问题）。</li>
  * </ul>
  * <p>
  * 区块守卫：目标区块未加载时跳过（不触发同步区块加载），与

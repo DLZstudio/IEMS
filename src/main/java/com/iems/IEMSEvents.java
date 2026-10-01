@@ -310,7 +310,7 @@ public final class IEMSEvents {
                         && !(snap.isReachable(c.start()) && snap.isReachable(c.end())))
                 .toList();
 
-        // NFDA 桥接连接（M9）：外部端点不在设备池，独立列表推送 → 青色桥接带
+        // EDA 桥接连接（M9）：外部端点不在设备池，独立列表推送 → 青色桥接带
         List<Connection> bridges = GridTopology.instance().getConnections().stream()
                 .filter(c -> c.type() == ConnectionType.ADAPTER_BRIDGE)
                 .toList();

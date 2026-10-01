@@ -30,6 +30,8 @@
 - [持久化存储](#持久化存储)
 - [高级玩法](#高级玩法)
 - [技术细节](#技术细节)
+- [设备发现系统](#设备发现系统)
+- [适配器层](#适配器层)
 - [开发者 API](#开发者-api)
 - [构建与开发](#构建与开发)
 - [依赖要求](#依赖要求)
@@ -44,7 +46,7 @@
 
 IEMS 0.8.0-beta 是对旧版 IEMS 的**完全重写**（逻辑层与表现层彻底分离）：
 
-- **能源管理框架** — 本模组不直接提供发电/储能核心，核心与设备由外部模组通过 API 接入（如 ZCSMSS、IEMS-TestDevices）
+- **能源管理框架** — 本模组不直接提供发电/储能核心，核心与设备由外部模组通过 API 接入（官方参考实现：IEMS-TestDevices）
 - **统一能量抽象** — FE / AE 等单位统一换算为 SE（Standard Energy），BigInteger 高精度运算，超大数值无精度损失
 - **激光连接可视化** — 设备间激光束实时展示电网拓扑，通电黄色 / 断电红色 / 桥接青色（可配置）
 - **手动拉线 + 自动组网** — Shift+右键拉线建连（HUD 实时测距），广播塔范围内自动扫描连接，外部 FE 设备自动桥接
@@ -53,7 +55,7 @@ IEMS 0.8.0-beta 是对旧版 IEMS 的**完全重写**（逻辑层与表现层彻
 - **模拟化持久化** — 电网数据存于 `iems_grid.dat`，重启后由设备工厂重建，**无区块加载也持续运行**
 - **开放 API** — 稳定的 `IEMSAPI` 静态门面 + `IIemsInteractable` 拉线契约，供外部模组接入
 
-> ⚠️ **重要：** 本模组是**框架**，不提供核心方块！需要安装提供核心的模组（如 ZCSMSS 或测试用 IEMS-TestDevices）才能组成完整电网。
+> ⚠️ **重要：** 本模组是**框架**，不提供核心方块！需要安装提供核心的模组（官方测试模组 IEMS-TestDevices，或自行按 API 接入）才能组成完整电网。
 
 ---
 
@@ -61,7 +63,7 @@ IEMS 0.8.0-beta 是对旧版 IEMS 的**完全重写**（逻辑层与表现层彻
 
 ### 核心方块
 
-> 📌 由其他 Mod 通过 `CoreDevice` 接入提供（如 ZCSMSS、IEMS-TestDevices 的测试核心）
+> 📌 由其他 Mod 通过 `CoreDevice` 接入提供（如 IEMS-TestDevices 的测试核心）
 
 - 电网身份锚点，能量池总入口/出口，协议容量管理者
 - 注册时所在区块自动设为**常加载**（注销时解除）
@@ -434,7 +436,8 @@ colorizeAutoConnect = true   # true：自动桥接连接用青色；false：与�
 |----|------|
 | `com.iems.api` | 公开门面（`IEMSAPI` / `IIemsInteractable` / `SubSeAccumulator`） |
 | `com.iems.core` | 电网内核（grid / node / 调度 / 协议） |
-| `com.iems.adapter` | 外部能量适配（`FEDA` FE 桥接） |
+| `com.iems.eds` | 设备发现系统 EDS（扫描器 + 身份轴，只发现不桥接） |
+| `com.iems.adapter` | 适配器层（DA：`FEDA` 把外部 FE 设备伪装为节点接入电网） |
 | `com.iems.network` | C2S/S2C 载荷（连接请求、全量同步、关停同步） |
 | `com.iems.webpanel` | Web 面板（JDK HttpServer，端口 28567） |
 | `com.iems.example` | 示例设备（中继器/广播塔，仅依赖 api 门面） |
@@ -460,6 +463,153 @@ colorizeAutoConnect = true   # true：自动桥接连接用青色；false：与�
 
 ---
 
+## 设备发现系统
+
+设备发现系统（**EDS**）回答一个问题：**附近有哪些外部能量设备，它们各自属于哪个能源体系？**
+
+它的边界非常明确——**只发现、只分类，不注册、不建连、不换算**。桥接决策全部交给下游的[适配器层](#适配器层)。
+
+### 扫描入口
+
+```java
+IEMSAPI.EDS.scan(level, center, radius)   // 同步一次性扫描（服务端主线程）
+IEMSAPI.EDS.addListener(listener)         // 注册消费者（可注销）
+IEMSAPI.EDS.registerFlavor(flavor)        // 声明自家能源体系
+```
+
+- 半径单位为格，**钳制到 [1, 128]**（`EDSScanner.MAX_RADIUS = 128`）
+- **全局入口**：`IEMSAPI.EDS` 是静态门面（等价全局函数），扫描器的监听器表与身份表也是静态的
+- 只枚举**已加载区块**，再做球形范围裁剪
+- 跳过**已注册的 IEMS 设备**（含核心），计入报告的 `skippedIemsDevices`
+- **同步执行，无异步、无限流**——调用频率由调用方决定（内置适配器为每 20 tick 一次）
+
+### 单设备探测
+
+对每个方块实体按 **7 个方向上下文取并集**探测，读取 NeoForge `IEnergyStorage` 能力：
+
+| 读数 | 用途 |
+|------|------|
+| `canExtract` | 判定为**生产者** |
+| `canReceive` | 判定为**消费者** |
+| `stored` / `capacity` | 存量与容量快照 |
+| 暴露面 | 记录从哪一面可取能（`exposedSides`；`null` 表示无方向上下文） |
+
+### 身份轴：EnergyFlavor
+
+按方块 ID 的 **namespace** 解析设备所属的能源体系：
+
+| 字段 | 含义 |
+|------|------|
+| `namespace` | 模组命名空间（如 `appliedenergistics2`） |
+| `unit` | 该体系的能量单位（决定桥接换算基准） |
+| `displayName` | 身份显示名（如 `Applied Energistics`） |
+
+- 外部模组经 `IEMSAPI.EDS.registerFlavor` 声明自家体系
+- **未注册的 namespace 默认按 FE 处理**，并以 namespace 本身作为显示名
+
+### 发现报告：EDSReport
+
+一次扫描产出**不可变**报告（EDS，v1），推送给全部监听器：
+
+| 字段 | 说明 |
+|------|------|
+| `origin` / `radius` / `scanTick` | 扫描原点、钳制后半径、扫描时刻（`level.getGameTime()`） |
+| `devices` | 发现的设备列表（`EDSDevice`，稳定序） |
+| `chunksScanned` | 实际枚举的已加载区块数 |
+| `blockEntitiesProbed` | 探测过的方块实体总数（含未命中能力的） |
+| `skippedIemsDevices` | 跳过的已注册 IEMS 设备数（含核心） |
+
+便捷子集方法：`producers()` / `consumers()` / `storage()` / `byNamespace(ns)`。
+
+### 消费契约：IEDSListener
+
+```java
+void onDiscovery(EDSReport report);
+```
+
+- 回调运行在**服务器主线程**
+- 心智模型：发现层只说「这个是 FE 设备、那个是 AE 设备」；**桥接与否、桥接谁、怎么换算，全由监听器自行决定**
+- 重复注册同一监听器会收到**双份报告**
+
+> ⚠️ `EDSReport` 是**扫描时刻的快照**，不是实时状态。存量设备的存活判定不要依赖它——发现层会把已注册位置判为 `skippedIems` 跳过，重扫必然看不到（正确处理方式见适配器层的 `sync`）。
+
+---
+
+## 适配器层
+
+适配器层（记作 **DA**；当指代 DA 这个**集合整体**时亦称 **EDA**）是**可插拔**的执行层：把发现层找到的外部设备**伪装成 IEMS 节点**注册进电网，并在每 tick 执行 SE ↔ 目标单位的双向换算读写。
+
+DA 按能源体系各有实现，命名规则为「体系名 + DA」——本版本唯一实现是 **FEDA**（FE 体系的 DA）；AE / EU 等属于后续扩展点。
+
+### 为什么需要适配层
+
+调度器只认节点接口，**不区分**「SE 原生设备」与「适配伪装节点」：
+
+```
+IEnergyProducer / IEnergyConsumer / StorageDevice
+```
+
+DA 只是把 SE 指令翻译成外部协议的执行器——新增一种能源体系 ＝ 新增一个 `DeviceAdapter` 实现，内核无需改动。
+
+### DeviceAdapter 接口
+
+每个适配器**绑定一台支持自动连接的 `TransferDevice`**（如能源广播塔）：
+
+| 方法 | 调用时机 | 职责 |
+|------|---------|------|
+| `unit()` | — | 适配的能源体系单位（FE / AE…） |
+| `scan(level, center, radius)` | 周期 | 请求发现层扫描，返回本适配器关注的设备清单 |
+| `sync(level)` | 每 20 tick | 对比报告与已注册节点：新增注册、消失注销 |
+| `tick(level)` | 每 tick | 对名下节点的外部能力做实际读写（抽取 / 测接收余量 / 送抵） |
+| `detach()` | 宿主失效 | 注销名下全部节点 |
+
+> ⚠️ `sync` 对**存量设备直接探测方块能力**判定存在性，**不依赖扫描报告**——因为发现层会把已注册位置判为 `skippedIems` 跳过，若只看报告，重扫会把存量设备误判为消失。
+
+### 调度器：FeBridgeTicker
+
+| 周期 | 动作 |
+|------|------|
+| 每 tick | 遍历自动连接中继器 → `DeviceAdapter.tick`；同时清扫孤儿节点 |
+| 每 20 tick | `DeviceAdapter.sync` 重扫（diff 同步） |
+
+在主循环中的顺序（`IEMSEvents`）：`FeBridgeTicker.tick / tickRescan` → `EnergyDispatcher.dispatchAtTick`，即**先同步外部设备，再做本 tick 能量分配**。
+
+### 伪装节点与孤儿清扫
+
+由适配器注册进电网的节点统一实现标记接口 `IAdapterNode`：
+
+- `owner()` — 归属链：宿主中继器 → 逐设备伪装节点
+- `isOrphaned()` — 宿主是否已注销（注册表中该位置不再是原实例）
+
+两个用途：
+
+1. **自动连接排除** — `IemsAutoConnector` 对伪装节点跳过 `RELAY_TO_DEVICE` 自动建连，其接入只走 `ADAPTER_BRIDGE`，避免双连接冲突
+2. **孤儿清扫** — 宿主中继器注销后伪装节点成为无连接孤儿，`FeBridgeTicker` 每 tick 检测并注销
+
+### 内置实现：FEDA
+
+**FEDA** 是本版本唯一的 `DeviceAdapter` 实现，绑定自动连接中继器（广播塔），按外部设备能力分类注册：
+
+| 外部能力 | 伪装节点类型 | 场景 |
+|---------|-------------|------|
+| 可抽取 | `FeProducerAdapter` | 外部发电机 → 向电网送电 |
+| 可接收 | `FeConsumerAdapter` | 外部用电器 → 从电网取电 |
+| 有容量 | `FeBufferAdapter` | 外部储能 → 双向吞吐 |
+
+- 通过 `silentRegister` 将外部设备注册为独立伪装节点
+- 经 `IEMSAPI.addConnection(..., ConnectionType.ADAPTER_BRIDGE)` 建立**桥接连接**（渲染为青色激光，可用 `colorizeAutoConnect` 关闭着色）
+- 宿主失效（中继器被拆 / 注销）时 `detach()` 并清理名下节点
+
+### 换算缓冲：FeConversionBuffer
+
+逐设备粒度维护 FE ↔ SE 的**抽取侧**与**推送侧**缓冲，是 DA 层能量转换的核心状态机：
+
+- 依据外部接收余量与 `maxFePerTick` 计算 SE **需求申报**（demand declaration）
+- 电网分配的 SE 按当前 `fePerSe` 折算 FE 进入推送池，再送抵外部设备
+- 需求申报粒度**随汇率自适应**：一 tick 送抵量不足 1 SE 时向上取整申报，因此汇率调高也不会把吞吐压死（详见[能量汇率配置](#能量汇率配置)）
+
+---
+
 ## 开发者 API
 
 ### 快速开始
@@ -471,7 +621,7 @@ IEMS 以 **Jar-in-Jar / libs 依赖**方式接入外部模组：
 ```groovy
 dependencies {
     // 将 IEMS 构建产物复制到 libs/ 后：
-    implementation files('libs/IEMS-0.8.0-beta-BUILD.00000114.jar')
+    implementation files('libs/IEMS-0.8.0-beta-BUILD.00000120.jar')
 }
 ```
 
@@ -555,8 +705,11 @@ public class MyDeviceBlockEntity extends BlockEntity implements IIemsInteractabl
 | 连接 | `addConnection(a, b, type)` / `removeConnection(...)` | 连接管理 |
 | 控制 | `setGridActive(boolean)` / `forceRescan()` | 电网开关 / 强制重扫 |
 | 功率 | `registerPowerInput(id, rate)` / `unregisterPowerInput(id)` | 功率源注册 |
-| 发现 | `scanForDevices(level, center, radius)` | 周边设备扫描 |
-| 适配 | `registerEnergyFlavor(flavor)` | 注册能量风味 |
+| EDS | `EDS.scan(level, center, radius)` | 周边设备扫描（半径钳制 [1,128]） |
+| EDS | `EDS.addListener(l)` / `EDS.removeListener(l)` | 注册/注销发现监听器 |
+| EDS | `EDS.registerFlavor(flavor)` | 注册能量体系身份（namespace → 单位/显示名） |
+
+> 设备发现与适配器层的完整设计（扫描边界、报告结构、`DeviceAdapter` 生命周期、伪装节点与孤儿清扫）见 [设备发现系统](#设备发现系统) 与 [适配器层](#适配器层)。
 
 ### Web 面板 HTTP API（完整）
 
@@ -610,7 +763,7 @@ powershell -ExecutionPolicy Bypass -File .\.DLZstudio\buildid\build.ps1
 **发布模式**（版本号同步 `neoforge.mods.toml`）：
 - `build.ps1 -Release` / `build.sh --release`
 
-**产物命名：** `IEMS-0.8.0-beta-BUILD.00000114.jar`（普通）/ `{modid}-{mcver}-neoforge-{semver}.{n}`（发布）
+**产物命名：** `IEMS-0.8.0-beta-BUILD.00000120.jar`（普通）/ `iems-1.21.1-neoforge-0.8.0-beta.120.jar`（发布，版本号同步写入 `neoforge.mods.toml`）
 
 ### 测试
 
@@ -646,15 +799,17 @@ powershell -ExecutionPolicy Bypass -File .\.DLZstudio\buildid\build.ps1
 
 | 模组 | 说明 |
 |------|------|
-| **ZCSMSS**（矩阵子节点服务器） | 提供核心方块，使用 IEMS API，完美联动 |
-| **IEMS-TestDevices** | 官方测试模组：测试核心/中继/FE 电池/电弧炉 |
+| **IEMS-TestDevices** | 官方测试模组：测试核心/中继/FE 电池/电弧炉（推荐的参考实现） |
 | 任意 FE 科技模组 | 设备由 FEDA 自动发现桥接 |
+| ~~ZCSMSS~~（矩阵子节点服务器） | ⚠️ **已停止维护**：只兼容旧版 IEMS，未跟进新版 API |
+
+> ⚠️ **ZCSMSS 已停更**：它不再随 IEMS 的更新版本适配，因此**不支持新版 IEMS**。新版下请改用官方测试模组 IEMS-TestDevices，或按 [开发者 API](#开发者-api) 自行提供核心。
 
 ### 安装步骤
 
 1. 安装 NeoForge 21.1+
 2. 下载 IEMS JAR 放入 `mods` 文件夹
-3. （可选）放入提供核心的模组（ZCSMSS 或 IEMS-TestDevices）
+3. （可选）放入提供核心的模组（推荐官方测试模组 IEMS-TestDevices）
 4. 启动游戏
 
 ---
@@ -663,7 +818,11 @@ powershell -ExecutionPolicy Bypass -File .\.DLZstudio\buildid\build.ps1
 
 **Q：为什么没有核心方块？**
 
-A：IEMS 是能源管理**框架**，核心由外部模组提供（如 ZCSMSS），避免功能重复。测试可安装 IEMS-TestDevices。
+A：IEMS 是能源管理**框架**，核心由外部模组提供，避免功能重复。可安装官方测试模组 IEMS-TestDevices。
+
+**Q：ZCSMSS 还能用吗？**
+
+A：不推荐。ZCSMSS **已停止维护**，只兼容旧版 IEMS、未跟进新版 API——新版 IEMS 下它**不再受支持**。请改用官方测试模组 IEMS-TestDevices，或按 [开发者 API](#开发者-api) 自行提供核心。
 
 **Q：如何知道核心是否工作？**
 
@@ -721,6 +880,131 @@ A：见本文档 [开发者 API](#开发者-api) 一节，参考 IEMS-TestDevice
 ---
 
 ## 更新日志
+
+### 相较旧版 IEMS 的改进（新版 0.8.0-beta / IEMS0930 ← 旧版 v0.6.0 ~ v0.8.0-BUILD.00000160）
+
+> 新版是对旧版 IEMS 的**完全重写**：从「方块实体即电网」的单体实现，改为「逻辑-表现彻底分离 + 工厂化持久化」的能源管理框架。以下按维度列出主要改进与行为差异（当前构建 BUILD.00000120）。
+
+#### 1. 架构：逻辑与表现彻底分离
+
+| 维度 | 旧版 | 新版 |
+|------|------|------|
+| 电网逻辑承载 | 写在 BlockEntity 内，强耦合 `Level` | 独立逻辑层（纯 POJO），不依赖 `Level` |
+| 设备身份 | 硬编码类型枚举 | 工厂 ID + 参数，外部模组可注册 |
+| 设备间关系 | 互相持有引用 | 实例自治，只经调度器与电网交互 |
+| 电网运行 | 区块未加载即停摆 | **无区块加载也持续模拟运行** |
+
+- ✅ 外部模组接入只需 `new` 一个逻辑实例 + `IEMSAPI.attachOrRegisterDevice()`，无需继承框架基类
+- ✅ 实例可独立 new / 销毁 / 改参数，天然适配多核并行
+- ✅ 设备工厂机制让「设备脱离方块依然存在」成为可能
+
+#### 2. 持久化：从「只存连接」到「完整电网快照」
+
+| 维度 | 旧版 | 新版 |
+|------|------|------|
+| 存储文件 | `data/DLZstudio/IEMS/iems_connections.dat` | `data/iems_grid.dat` |
+| 存储内容 | 仅连接（坐标 + type 枚举） | 设备（工厂 ID + 参数）+ 核心 + 全部连接 |
+| 重建方式 | 靠 BE 逐次重新注册，顺序敏感 | 服务器启动时由工厂重建 → `restoreState` |
+| 区块卸载 | 卸载即注销 + 清理连接 | **卸载不注销设备**，重启后连接完整保留 |
+| 覆盖范围 | 仅主网连接 | 主网 + 孤岛 + 桥接连接全覆盖 |
+
+- ✅ 修复旧版「设备早于核心加载 → `onLoad()` 注册无效 → 电网永远为空」的顺序敏感缺陷
+- ✅ 修复「区块卸载误注销核心 → 重启后核心连接丢失」（BUILD.00000110）
+
+#### 3. 能量体系：从「三单位硬编码换算」到「统一 SE 基准 + 可配置汇率」
+
+| 维度 | 旧版 | 新版 |
+|------|------|------|
+| 单位体系 | SE / FE / GE（`EnergyValue.EnergyUnit`） | FE / AE / SE，SE 为内部结算基准 |
+| 单位换算 | 硬编码（1 SE = 1 FE、1 SE = 10⁸ GE） | 汇率可配置：`Energy.toml` 的 `fePerSe`（默认 10） |
+| 换算载体 | 额外放置「能量转换器」方块 | FE 设备由桥接层自动换算，无需转换器 |
+| 结算节拍 | SE/2tick（每 2 tick 一次） | **SE/tick（每 Tick 结算）** |
+| 遗留单位 | GE 贯穿全代码 | 移除 GE（及其显示模式 API） |
+
+- ✅ `fePerSe` 支持热重载（`/iems reload`），越界自动收敛、非数字回退默认
+- ✅ FE 桥接申报粒度按「一 tick 送抵量」自适应，高汇率下吞吐不再被压到 `fePerSe` FE/tick
+
+#### 4. 外部设备接入：从「要求对方向适配」到「零适配自动桥接」
+
+- 旧版：其他模组的设备必须实现 IEMS API 或继承框架方块才能入网
+- 新版：职责拆成两层——**设备发现（EDS）**负责扫描与身份识别（只发现、不桥接），**适配器层（EDA）**由 `FEDA` 逐设备伪装成节点接入；每 20 tick 重扫范围内**任意 NeoForge FE 设备**（发电机 / 用电器 / 储能），发现即自动建立桥接连接（青色激光，可配置），对方模组**零改动**
+- ✅ 借此打通了此前从未成功的外部 FE 设备互联（BUILD.00000091 起）
+
+#### 5. Web 面板：从「8080 无鉴权只读页」到「Token 鉴权 REST API」
+
+| 维度 | 旧版 | 新版 |
+|------|------|------|
+| 端口 / 绑定 | 8080，仅本机页面 | 28567，默认 127.0.0.1，可显式开放远程 |
+| 鉴权 | 无 | 全 `/api/*` 需 Token（请求头或查询参数） |
+| 形态 | 固定页面（状态 + 设备开关） | REST API：status / devices / connections / topology / metrics / grid/active |
+| 数据格式 | 页面直读内存 | 统一信封 `{schema, ts, data}`，BigInteger 字符串化防精度丢失 |
+| 时序数据 | 无 | 指标环形缓冲，可接外部仪表盘 |
+| 写操作 | 设备供能开关 | `POST /api/grid/active` 开关电网 |
+
+- ✅ 线程安全：HTTP 线程任务队列化到 tick 线程，杜绝与 `CoreDevice` 的数据竞争
+- ✅ 世界重载时线程池显式停止，指标缓冲随会话清理，避免线程泄漏与跨存档串扰
+
+#### 6. 电网拓扑：新增「主网 / 孤岛 / 桥接」三态
+
+- 旧版：未连核心即判定无效（广播塔未连核心直接拒绝连接）
+- 新版：允许未接入核心的设备先行互连（**孤岛**），渲染红色激光提示未供电，核心就位后自动上电
+- ✅ BFS 可达性判定 + 拓扑快照（主网 / 孤岛 / 边界三视角聚合）
+- ✅ 核心↔设备连接在设备脱离主网时变红而非消失（核心端豁免过滤）
+
+#### 7. 连接交互：从「简易两点连线」到「带二次校验的拉线契约」
+
+| 维度 | 旧版 | 新版 |
+|------|------|------|
+| 交互识别 | `instanceof` 判断具体方块类 | `IIemsInteractable` 契约（与方块类型解耦） |
+| 距离提示 | 顶部文字提示，超距静默取消 | HUD 实时距离 + 最大距离，超距（+10 缓冲）自动收线 |
+| 服务端校验 | 弱（以客户端为准） | C2S 请求 + 服务端二次校验（端点 / 同维度 / 距离 / 重复 / 中继规则） |
+| 安全防护 | 无 | 邻近检查 + 频率限制（防改包远程任意建连） |
+| 状态残留 | 换维度 / 退世界可能残留 | 维度变化立即收线，退出世界强制清理 |
+
+#### 8. 激光渲染：可视角、距离与拓扑的三重稳健化
+
+- ✅ Billboard 宽度方向（宽 = 光束方向 × (相机→光束)）——侧视不再压缩成细线
+- ✅ 屏幕空间最小宽度 `max(0.03, 距离 × 0.0015)`——远处光束不细化消失
+- ✅ 关闭背面剔除做双面渲染，任意角度可见；保留深度测试（仍被方块遮挡）
+- ✅ 相邻条带间插入退化三角形分隔，消除「幽灵斜线」
+- ✅ 新增 `Renderer.toml` 的 `colorizeAutoConnect`：桥接青色激光可开关
+- ✅ 客户端缓存 `ClientGridCache` 同时处理主网 / 孤岛 / 桥接三列表，含四象限统计与 EMA 平滑
+
+#### 9. 并发模型：明确「tick 线程独占」
+
+- 旧版：对外 API 直接读写电网状态，Web 线程与游戏线程并发访问
+- 新版：电网状态由服务端 tick 线程独占；外部线程统一经 `IEMSAPI.runOnServerThread()` / `callOnServerThread()` 提交
+- ✅ `GridSyncPayload` 尺寸校验，防超大包导致客户端 OOM
+
+#### 10. 命令与运维
+
+| 旧版 | 新版 |
+|------|------|
+| `/iems_debug add_connection` | `/iems status` 电网总览 |
+| `/iems_debug list_connections` | `/iems protocol` 协议容量 |
+| `/iems_debug clear_connections` | `/iems scan` 强制 BFS 重扫 |
+| — | `/iems shutdown` / `/iems restart` 电网开关（权限 2）|
+| — | `/iems reload` 热重载全部配置（权限 2）|
+
+#### 11. 构建与依赖
+
+- ✅ 接入 **DLZstudio BUILDID 规范**：唯一合法构建入口 `build.ps1` / `build.sh`，产物内嵌构建编号（旧版为手写 `build_v3.bat`）
+- ✅ **GeckoLib 4.8.4 以 Jar-in-Jar 内嵌**，玩家无需单独安装（旧版列为必需外部依赖）
+- ✅ NeoForge 依赖范围由固定 `21.1.228+` 放宽为 `[21.1.0,)`
+- ✅ 配置集中于 `config/DLZstudio/IEMS/`（Energy / APIserve / Renderer），首次启动自动生成带注释
+
+#### 12. 框架边界调整与行为差异（迁移参考）
+
+> 以下为**行为变化**，不全是改进，升级时需留意。
+
+- **方块收敛**：旧版自带中继器 / 广播塔 / 标准存储器 / 通用存储器 / 转换器 / 标记方块；新版框架仅保留示例设备（中继器 / 广播塔），核心与储能交给外部模组（如 IEMS-TestDevices；ZCSMSS 已停止维护，不再跟进新版 IEMS）
+- **核心连接距离**：旧版固定 1500 格 → 新版由核心注册时声明，未声明时框架默认 500 格
+- **协议容量**：旧版默认 1000，由设备端 `requestProtocolCapacity` / `releaseProtocolCapacity` 增减 → 新版由核心声明 `protocolLimit`，框架统一计算与超限检测
+- **视线遮挡检查**：旧版广播塔有「≥3 层完整方块遮挡则不可连」规则 → 新版改为纯距离判定
+- **时间显示模式 API**：旧版 `standard` / `coordinated` → 新版移除，统一为 SE/tick
+- **API 形态**：旧版 `IEMSApi.getInstance()` 实例式门面 + `EnergyValue` 包装 → 新版静态门面 `IEMSAPI` + 裸 `BigInteger`
+
+---
 
 ### IEMS0930 (2026-09-30, BUILD.00000114)
 

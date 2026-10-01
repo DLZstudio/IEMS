@@ -1,7 +1,7 @@
 package com.iems.adapter;
 
 import com.iems.core.energy.EnergyUnit;
-import com.iems.discovery.DiscoveredDevice;
+import com.iems.eds.EDSDevice;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 
@@ -11,7 +11,7 @@ import java.util.List;
  * 设备适配器接口（DA，可插拔）。
  * <p>
  * 每个适配器绑定一台支持自动连接的 {@link com.iems.core.node.TransferDevice}，
- * 把 DS（DeviceScanner，见 {@link com.iems.discovery.DiscoveryScanner}）发现的
+ * 把 EDS（见 {@link com.iems.eds.EDSScanner}）发现的
  * 外部能量设备伪装成 {@code IEnergyNode} 注册进电网（逐设备节点），并在
  * 每 tick 执行 SE ↔ 目标单位（FE/AE…）的双向转换读写。
  * </p>
@@ -26,14 +26,14 @@ public interface DeviceAdapter {
     /** 适配的能源体系单位（FE/AE…）。 */
     EnergyUnit unit();
 
-    /** 周期扫描：请求 DS 扫描以 {@code center} 为圆心的覆盖范围，返回本适配器关注的设备清单。 */
-    List<DiscoveredDevice> scan(ServerLevel level, BlockPos center, int radius);
+    /** 周期扫描：请求 EDS 扫描以 {@code center} 为圆心的覆盖范围，返回本适配器关注的设备清单。 */
+    List<EDSDevice> scan(ServerLevel level, BlockPos center, int radius);
 
     /**
      * 同步适配节点：对比扫描报告与已注册节点，新增注册、消失注销。
      * <p>
      * 存量设备<b>直接探测方块能力</b>判定存在性，不依赖扫描报告
-     * （DiscoveryScanner 会把已注册位置判为 skippedIems 跳过，重扫必丢）。
+     * （EDSScanner 会把已注册位置判为 skippedIems 跳过，重扫必丢）。
      * </p>
      */
     void sync(ServerLevel level);

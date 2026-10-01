@@ -21,7 +21,7 @@ import java.math.BigInteger;
  *       非传输节点设备自动建连（{@code RELAY_TO_DEVICE}），幂等；</li>
  *   <li><b>手动连接</b>：<b>支持</b>——同样可作为玩家 Shift+右键拉线的端点；</li>
  *   <li><b>适配器</b>：{@code autoConnect == true} 时 TransferDevice 默认装配
- *       {@code FEDA}（FE 桥接组件），因此可在半径内经 NFDS 发现外部 FE 设备并桥接进网
+ *       {@code FEDA}（FE 桥接组件），因此可在半径内经 EDS 发现外部 FE 设备并桥接进网
  *       （外部 FE 设备入网的唯一通道即自动连接节点）。</li>
  * </ul>
  *

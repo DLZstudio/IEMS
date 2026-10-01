@@ -20,8 +20,8 @@ import java.util.List;
  * 电网中的连接节点，负责激光连接与路由。每个实例持有独立的连接参数。
  * </p>
  * <p>
- * <b>DS/DA 集成（M9+）</b>：支持自动连接的传输设备持有可插拔的
- * {@link DeviceAdapter} 列表——内建 {@link FEDA} 在自身连接半径内经 NFDS
+ * <b>EDS/DA 集成（M9+）</b>：支持自动连接的传输设备持有可插拔的
+ * {@link DeviceAdapter} 列表——内建 {@link FEDA} 在自身连接半径内经 EDS
  * 发现外部 FE 设备，伪装成独立节点（逐设备）接入电网（外部设备自身
  * 成为注册节点，由调度器直接结算，本节点不再聚合桥接账目）。
  * 不支持自动连接的传输设备为纯传输节点（无适配器，也不得手动连接用电/发电器）。
@@ -102,7 +102,7 @@ public class TransferDevice implements IEnergyNode {
         this.whitelist = whitelist == null ? List.of() : new ArrayList<>(whitelist);
         this.blacklist = blacklist == null ? List.of() : new ArrayList<>(blacklist);
         this.anchorOffset = anchorOffset == null ? new Vec3(0.5, 0.5, 0.5) : anchorOffset;
-        // M9+：自动连接实例默认装配 FE 适配器（DS/DA 逐设备接入）
+        // M9+：自动连接实例默认装配 FE 适配器（EDS/DA 逐设备接入）
         List<DeviceAdapter> combined = new ArrayList<>();
         if (autoConnect) {
             combined.add(new FEDA(this));
